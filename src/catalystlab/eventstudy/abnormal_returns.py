@@ -209,18 +209,26 @@ def compute_event_metrics(
     holding_windows: Iterable[int],
     beta_window_days: int = DEFAULT_BETA_WINDOW_DAYS,
     beta_exclusion_days: int = DEFAULT_BETA_EXCLUSION_DAYS,
+    events_override: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Compute beta + CAR for every event in the panel x every holding window.
+    """Compute beta + CAR for every event x every holding window.
 
     Args:
-        panel: long-format panel from `ingestion.panel.build_panel` with
-            columns including ``[date, ticker, return, event_type,
-            event_magnitude]``.
+        panel: long-format panel from `ingestion.panel.build_panel`. Used
+            for ticker returns. If ``events_override`` is None, events are
+            extracted from ``panel.event_type`` (subject to the panel's
+            priority A<B<C<D<E dedup of overlapping (ticker, date) rows).
         benchmark_returns: daily returns of the primary benchmark
             (e.g. XLK), indexed by trading date.
         holding_windows: iterable of post-event windows (e.g. [1, 5, 20, 60]).
         beta_window_days: window length for β estimation.
         beta_exclusion_days: exclusion buffer before the event for β.
+        events_override: optional explicit events DataFrame with columns
+            ``[ticker, date, event_type, event_magnitude]``. When provided,
+            it bypasses the panel's collapsed event view and processes
+            every row independently — required when overlapping events on
+            the same (ticker, date) must be preserved (prereg §12 q.1).
+            Typically obtained from `ingestion.panel.enumerate_all_events`.
 
     Returns:
         Long-format DataFrame with columns ``EVENT_METRICS_COLUMNS``,
@@ -243,7 +251,10 @@ def compute_event_metrics(
     if panel.empty:
         return pd.DataFrame(columns=EVENT_METRICS_COLUMNS)
 
-    events = panel[panel["event_type"].notna()].copy()
+    if events_override is not None:
+        events = events_override.copy()
+    else:
+        events = panel[panel["event_type"].notna()].copy()
     if events.empty:
         return pd.DataFrame(columns=EVENT_METRICS_COLUMNS)
 

@@ -422,6 +422,49 @@ def test_compute_event_metrics_multi_window_replicates_beta() -> None:
     assert betas[0] == pytest.approx(0.8, abs=1e-9)
 
 
+def test_compute_event_metrics_events_override_preserves_overlap() -> None:
+    """events_override processes every row independently — no panel dedup."""
+    n = 500
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    rng = np.random.default_rng(31)
+    bench = pd.Series(rng.normal(0, 0.01, n), index=dates)
+
+    panel, _ = _make_synth_panel(
+        tickers=["VRT"],
+        n_days=n,
+        benchmark_returns=bench,
+        beta_per_ticker={"VRT": 1.0},
+        alpha_per_event={},
+    )
+
+    # Two events on the same (ticker, date), as if E1 and E2 from analyst.csv.
+    events = pd.DataFrame(
+        [
+            {
+                "ticker": "VRT",
+                "date": dates[400],
+                "event_type": "E",
+                "event_magnitude": 0.20,
+            },
+            {
+                "ticker": "VRT",
+                "date": dates[400],
+                "event_type": "E",
+                "event_magnitude": 0.30,
+            },
+        ]
+    )
+    metrics = compute_event_metrics(
+        panel,
+        bench,
+        holding_windows=[5],
+        events_override=events,
+    )
+    # 2 events * 1 window = 2 rows (panel-extracted would yield 0 since panel.event_type is empty)
+    assert len(metrics) == 2
+    assert sorted(metrics["event_magnitude"].tolist()) == [0.20, 0.30]
+
+
 @given(alpha=st.floats(min_value=-0.05, max_value=0.05, allow_nan=False))
 @settings(max_examples=15, deadline=None)
 def test_compute_ar_car_linear_in_alpha(alpha: float) -> None:

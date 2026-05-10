@@ -155,6 +155,39 @@ def _normalize_event_to_panel(
     raise ValueError(f"unknown event category: {category}")
 
 
+def enumerate_all_events(
+    sector: SectorConfig,
+    events: dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """All events from the logs in long format, WITHOUT priority dedup.
+
+    Returns columns ``[ticker, date, event_type, event_magnitude]``. When a
+    (ticker, date) has multiple events across categories, all rows are
+    preserved — unlike `build_panel` which collapses overlap to a single
+    row by category priority A < B < C < D < E.
+
+    Use this when downstream needs every event independently (e.g. Layer 3
+    `compute_event_metrics` for accurate IC estimation across categories).
+    """
+    universe = {t.ticker for t in sector.universe}
+    cols = ["ticker", "date", "event_type", "event_magnitude"]
+    frames: list[pd.DataFrame] = []
+    for cat in CATEGORY_PRIORITY:
+        ev = events.get(cat)
+        if ev is None or ev.empty:
+            continue
+        norm = _normalize_event_to_panel(ev, cat, universe)
+        if not norm.empty:
+            frames.append(norm)
+
+    if not frames:
+        return pd.DataFrame(columns=cols)
+
+    out = pd.concat(frames, ignore_index=True)
+    out["date"] = pd.to_datetime(out["date"])
+    return out.sort_values(["ticker", "date", "event_type"]).reset_index(drop=True)
+
+
 def build_panel(
     sector: SectorConfig,
     prices: pd.DataFrame,

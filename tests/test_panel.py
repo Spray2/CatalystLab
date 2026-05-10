@@ -213,3 +213,102 @@ def test_load_event_logs_reads_real_scaffolds() -> None:
 def test_load_event_logs_missing_file(tmp_path: Path) -> None:
     out = load_event_logs(tmp_path)  # no files at all
     assert out == {}
+
+
+# ---------- enumerate_all_events (W2 T6) ----------
+
+
+from catalystlab.ingestion.panel import enumerate_all_events  # noqa: E402
+
+
+def test_enumerate_all_events_preserves_overlap() -> None:
+    """Two E events on same (ticker, date) survive (no priority dedup)."""
+    sector = make_mini_sector(["VRT"])
+    analyst_two_same_day = pd.DataFrame(
+        {
+            "ticker": ["VRT", "VRT"],
+            "event_date": ["2024-01-03", "2024-01-03"],
+            "bank": ["Goldman Sachs", "Morgan Stanley"],
+            "action": ["target_change", "target_change"],
+            "old_target": [100.0, 100.0],
+            "new_target": [120.0, 130.0],
+            "target_change_pct": [0.20, 0.30],
+            "source_url": ["x", "y"],
+        }
+    )
+    out = enumerate_all_events(sector, {"E": analyst_two_same_day})
+    assert len(out) == 2
+    assert (out["event_type"] == "E").all()
+    assert sorted(out["event_magnitude"].tolist()) == [0.20, 0.30]
+
+
+def test_enumerate_all_events_preserves_cross_category_overlap() -> None:
+    """Earnings + analyst on same (ticker, date) both preserved."""
+    sector = make_mini_sector(["VRT"])
+    earnings = pd.DataFrame(
+        {
+            "ticker": ["VRT"],
+            "announcement_date": ["2024-01-03"],
+            "fiscal_quarter": [pd.NA],
+            "estimate_eps": [1.0],
+            "actual_eps": [1.5],
+            "sue": [2.5],
+            "has_consensus": [True],
+            "surprise_sign": [1.0],
+        }
+    )
+    analyst = pd.DataFrame(
+        {
+            "ticker": ["VRT"],
+            "event_date": ["2024-01-03"],
+            "bank": ["Goldman Sachs"],
+            "action": ["target_change"],
+            "old_target": [100.0],
+            "new_target": [120.0],
+            "target_change_pct": [0.20],
+            "source_url": ["x"],
+        }
+    )
+    out = enumerate_all_events(sector, {"A": earnings, "E": analyst})
+    assert len(out) == 2
+    assert set(out["event_type"].unique()) == {"A", "E"}
+
+
+def test_enumerate_all_events_empty_input() -> None:
+    sector = make_mini_sector(["VRT"])
+    out = enumerate_all_events(sector, {})
+    assert out.empty
+    assert list(out.columns) == ["ticker", "date", "event_type", "event_magnitude"]
+
+
+def test_build_panel_collapses_overlap_first_wins() -> None:
+    """Counterpart documenting build_panel's policy: earlier category wins."""
+    sector = make_mini_sector(["VRT"])
+    prices = make_mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03"])
+    earnings = pd.DataFrame(
+        {
+            "ticker": ["VRT"],
+            "announcement_date": ["2024-01-03"],
+            "fiscal_quarter": [pd.NA],
+            "estimate_eps": [1.0],
+            "actual_eps": [1.5],
+            "sue": [2.5],
+            "has_consensus": [True],
+            "surprise_sign": [1.0],
+        }
+    )
+    analyst = pd.DataFrame(
+        {
+            "ticker": ["VRT"],
+            "event_date": ["2024-01-03"],
+            "bank": ["Goldman Sachs"],
+            "action": ["target_change"],
+            "old_target": [100.0],
+            "new_target": [120.0],
+            "target_change_pct": [0.20],
+            "source_url": ["x"],
+        }
+    )
+    panel = build_panel(sector, prices, {"A": earnings, "E": analyst})
+    row = panel[(panel["ticker"] == "VRT") & (panel["date"] == pd.Timestamp("2024-01-03"))]
+    assert row["event_type"].iloc[0] == "A"
