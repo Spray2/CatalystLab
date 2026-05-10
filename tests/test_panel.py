@@ -2,123 +2,32 @@
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from catalystlab.config.schemas import (
-    Benchmarks,
-    CostModel,
-    EventCategory,
-    Period,
-    SectorConfig,
-    StatsConfig,
-    Threshold,
-    TickerEntry,
-)
 from catalystlab.ingestion.panel import (
     PANEL_COLUMNS,
     _normalize_event_to_panel,
     build_panel,
     load_event_logs,
 )
-
-
-def _mini_sector(universe: list[str]) -> SectorConfig:
-    """Build a minimal SectorConfig for tests."""
-    return SectorConfig(
-        sector="test",
-        display_name="Test",
-        prereg_version="1.0",
-        prereg_lockfile_date=date(2026, 1, 1),
-        random_seed=42,
-        period=Period(start=date(2024, 1, 1), end=date(2024, 12, 31)),
-        universe=[
-            TickerEntry(ticker=t, name=t, market="NYSE", type="x") for t in universe
-        ],
-        benchmarks=Benchmarks(
-            primary="XLK",
-            secondary="SPY",
-            beta_window_days=252,
-            beta_exclusion_window_days=30,
-        ),
-        holding_windows=[1, 5, 20, 60],
-        categories={
-            "A": EventCategory(
-                name="earnings",
-                description="x",
-                hypothesis="x",
-                magnitude_metric="SUE",
-                source="yfinance",
-                threshold=Threshold(type="abs_gt", value=1.0),
-            ),
-            "B": EventCategory(
-                name="ppa", description="x", hypothesis="x",
-                magnitude_metric="binary", source="manual",
-            ),
-            "C": EventCategory(
-                name="orders", description="x", hypothesis="x",
-                magnitude_metric="usd", source="manual",
-            ),
-            "D": EventCategory(
-                name="shocks", description="x", hypothesis="x",
-                magnitude_metric="proxy", source="manual",
-            ),
-            "E": EventCategory(
-                name="analyst", description="x", hypothesis="x",
-                magnitude_metric="pct", source="manual",
-            ),
-        },
-        costs=CostModel(
-            commission_per_execution_eur=3.65,
-            spread_round_trip_bps=7.5,
-            fx_round_trip_bps=15.0,
-            default_position_size_eur=1000.0,
-        ),
-        stats=StatsConfig(
-            ic_threshold=0.05,
-            hit_rate_threshold=0.55,
-            bh_alpha=0.05,
-            bootstrap_n=1000,
-            bootstrap_ci=0.95,
-        ),
-    )
-
-
-def _mini_prices(tickers: list[str], dates: list[str]) -> pd.DataFrame:
-    rows = []
-    for t in tickers:
-        for i, d in enumerate(dates):
-            rows.append(
-                {
-                    "date": pd.Timestamp(d),
-                    "ticker": t,
-                    "open": 100.0 + i,
-                    "high": 102.0 + i,
-                    "low": 99.0 + i,
-                    "close": 101.0 + i,
-                    "adj_close": 100.0 + i * 1.01,
-                    "volume": 1_000_000,
-                }
-            )
-    return pd.DataFrame(rows)
-
+from tests.conftest import make_mini_prices, make_mini_sector
 
 # ---------- build_panel ----------
 
 
 def test_build_panel_empty_prices_returns_empty() -> None:
-    panel = build_panel(_mini_sector(["VRT"]), pd.DataFrame(), {})
+    panel = build_panel(make_mini_sector(["VRT"]), pd.DataFrame(), {})
     assert list(panel.columns) == PANEL_COLUMNS
     assert panel.empty
 
 
 def test_build_panel_basic_shape() -> None:
-    sector = _mini_sector(["VRT", "ANET"])
-    prices = _mini_prices(["VRT", "ANET", "XLK"], ["2024-01-02", "2024-01-03", "2024-01-04"])
+    sector = make_mini_sector(["VRT", "ANET"])
+    prices = make_mini_prices(["VRT", "ANET", "XLK"], ["2024-01-02", "2024-01-03", "2024-01-04"])
     panel = build_panel(sector, prices, {})
 
     # Universe only (XLK excluded from panel rows; used as benchmark).
@@ -129,8 +38,8 @@ def test_build_panel_basic_shape() -> None:
 
 
 def test_build_panel_returns_first_row_nan() -> None:
-    sector = _mini_sector(["VRT"])
-    prices = _mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03"])
+    sector = make_mini_sector(["VRT"])
+    prices = make_mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03"])
     panel = build_panel(sector, prices, {})
     # First row per ticker: pct_change = NaN.
     assert pd.isna(panel.iloc[0]["return"])
@@ -138,18 +47,18 @@ def test_build_panel_returns_first_row_nan() -> None:
 
 
 def test_build_panel_ar_proxy_is_simple_diff() -> None:
-    sector = _mini_sector(["VRT"])
+    sector = make_mini_sector(["VRT"])
     # VRT adj_close: 100.0, 101.01, 102.02 → returns approx 0, 0.0101, 0.01000099
     # XLK same series → r_xlk identical → ar = 0
-    prices = _mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03", "2024-01-04"])
+    prices = make_mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03", "2024-01-04"])
     panel = build_panel(sector, prices, {})
     non_nan = panel[panel["return"].notna()]
     assert (non_nan["ar_vs_xlk_proxy"].abs() < 1e-9).all()
 
 
 def test_build_panel_event_join_category_a() -> None:
-    sector = _mini_sector(["VRT"])
-    prices = _mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03", "2024-01-04"])
+    sector = make_mini_sector(["VRT"])
+    prices = make_mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03", "2024-01-04"])
     earnings_csv = pd.DataFrame(
         {
             "ticker": ["VRT"],
@@ -174,8 +83,8 @@ def test_build_panel_event_join_category_a() -> None:
 
 
 def test_build_panel_priority_a_over_b_on_overlap() -> None:
-    sector = _mini_sector(["VRT"])
-    prices = _mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03"])
+    sector = make_mini_sector(["VRT"])
+    prices = make_mini_prices(["VRT", "XLK"], ["2024-01-02", "2024-01-03"])
     earnings = pd.DataFrame(
         {
             "ticker": ["VRT"],
@@ -206,8 +115,8 @@ def test_build_panel_priority_a_over_b_on_overlap() -> None:
 
 
 def test_build_panel_shocks_broadcast() -> None:
-    sector = _mini_sector(["VRT", "ANET"])
-    prices = _mini_prices(["VRT", "ANET", "XLK"], ["2024-01-02", "2024-01-03"])
+    sector = make_mini_sector(["VRT", "ANET"])
+    prices = make_mini_prices(["VRT", "ANET", "XLK"], ["2024-01-02", "2024-01-03"])
     shocks = pd.DataFrame(
         {
             "event_date": ["2024-01-03"],

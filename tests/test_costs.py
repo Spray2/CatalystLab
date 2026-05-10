@@ -20,7 +20,7 @@ from catalystlab.ingestion.costs import (
 
 
 def _prereg_cost() -> CostModel:
-    """Prereg §5 reference parameters."""
+    """Local reference; prefer the `prereg_cost_model` fixture in new tests."""
     return CostModel(
         commission_per_execution_eur=3.65,
         spread_round_trip_bps=7.5,

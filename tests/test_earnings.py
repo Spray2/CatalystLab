@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from catalystlab.ingestion.earnings import (
     EARNINGS_COLUMNS,
@@ -196,6 +198,63 @@ def test_compute_sue_zero_surprise_sign_zero() -> None:
     )
     out = _compute_sue(raw, window_quarters=8, min_estimates=4)
     assert out.iloc[0]["surprise_sign"] == 0.0
+
+
+@given(
+    estimates=st.lists(
+        st.floats(min_value=-100.0, max_value=100.0, allow_nan=False, allow_infinity=False),
+        min_size=8,
+        max_size=12,
+    ),
+    surprise=st.floats(min_value=-10.0, max_value=10.0, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=50, deadline=None)
+def test_compute_sue_surprise_sign_invariant(
+    estimates: list[float], surprise: float
+) -> None:
+    """surprise_sign is always in {-1, 0, +1} when estimate and actual are present."""
+    n = len(estimates)
+    actuals = list(estimates)
+    actuals[-1] = estimates[-1] + surprise
+
+    raw = pd.DataFrame(
+        {
+            "ticker": ["VRT"] * n,
+            "announcement_date": pd.date_range(start="2020-01-01", periods=n, freq="QE"),
+            "fiscal_quarter": [pd.NA] * n,
+            "estimate_eps": estimates,
+            "actual_eps": actuals,
+        }
+    )
+    out = _compute_sue(raw, window_quarters=8, min_estimates=4)
+    valid_signs = out["surprise_sign"].dropna().unique()
+    for s in valid_signs:
+        assert s in {-1.0, 0.0, 1.0}, f"unexpected surprise_sign value {s}"
+
+
+@given(
+    constant=st.floats(min_value=-100.0, max_value=100.0, allow_nan=False, allow_infinity=False),
+    actual=st.floats(min_value=-100.0, max_value=100.0, allow_nan=False, allow_infinity=False),
+)
+@settings(max_examples=20, deadline=None)
+def test_compute_sue_constant_priors_yields_no_consensus(
+    constant: float, actual: float
+) -> None:
+    """When all prior estimates are identical, std=0 → has_consensus stays False."""
+    n = 6
+    raw = pd.DataFrame(
+        {
+            "ticker": ["VRT"] * n,
+            "announcement_date": pd.date_range(start="2020-01-01", periods=n, freq="QE"),
+            "fiscal_quarter": [pd.NA] * n,
+            "estimate_eps": [constant] * n,
+            "actual_eps": [constant] * (n - 1) + [actual],
+        }
+    )
+    out = _compute_sue(raw, window_quarters=8, min_estimates=4)
+    # std of constant priors is 0 (or NaN with ddof=1 on identical values) → no SUE.
+    assert not out["has_consensus"].any()
+    assert out["sue"].isna().all()
 
 
 def test_compute_sue_per_ticker_isolation() -> None:

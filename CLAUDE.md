@@ -183,42 +183,75 @@ catalystlab/
 
 ---
 
-## Current focus — Settimana 1
+## Current focus — Settimana 2 (Layer 3 event study)
 
-> Aggiornare questa sezione a fine Settimana 1 con il focus della Settimana 2.
+> Settimana 1 chiusa. Riepilogo W1 in `## Settimana 1 — riepilogo (chiusa)` qui sotto.
 
-### Obiettivo
+### Obiettivo W2
 
-Completare **Layer 1 + Layer 2** per il settore AI Infrastructure. A fine settimana il framework deve:
+Implementare **Layer 3 — event study engine** sopra il panel parquet prodotto da W1. A fine W2 il framework deve calcolare, per il settore `ai_infra`, le metriche statistiche per ogni (categoria × holding window) come dichiarato in prereg §6.
 
-1. Caricare e validare `sectors/ai_infra.yaml` con tutti i parametri della pre-registration §2-§7
-2. Scaricare prezzi storici 2023-01-01 → 2026-04-30 per 8 ticker + 2 benchmark (XLK, SPY)
-3. Scaricare/strutturare earnings dates per gli 8 ticker (categoria A)
-4. Predisporre stub vuoti per le altre 4 categorie (B/C/D/E) con schema CSV già definito
-5. Implementare cost model Fineco con i parametri della prereg §5
-6. Produrre il **panel dataset parquet** con schema `(date, ticker, return, ar_vs_xlk, event_type, event_magnitude)` — anche se gli event_type sono prevalentemente nulli a fine Settimana 1, lo schema deve essere definitivo
-7. Quality check: nessun gap nei prezzi, earnings dates verificate manualmente per 3 ticker random vs Yahoo Finance web
+### Deliverable W2
 
-### Task list (in ordine di esecuzione)
+1. `eventstudy/abnormal_returns.py` — calcolo AR(i, t+k) e CAR(i, [a,b]) per ogni evento, con beta i.e. **β-adjusted AR** sostituendo il proxy `r_i - r_xlk` di W1. Beta stimato su rolling 252gg con esclusione finestra 30gg pre-evento (prereg §6.1).
+2. `eventstudy/aggregation.py` — per (categoria, holding window): mean_CAR, hit_rate, count, std. Risoluzione overlapping events (prereg §12 q.1).
+3. `eventstudy/ic.py` — IC Spearman tra magnitude evento e CAR risultante.
+4. Schema output: `data/processed/event_metrics_<sector>.parquet` con `(category, holding_window, n_events, mean_car, hit_rate, ic, ic_pvalue)`.
+5. CLI subcommand: `catalystlab event-study --sector ai_infra` legge `panel_<sector>.parquet`, produce `event_metrics_<sector>.parquet` + manifest.
+6. Test coverage Layer 3 ≥ **80%** (CLAUDE.md "Tests" — Layer 3-4 non-negoziabili). Property-based test su AR computation (hypothesis).
 
-1. **Init repo**: `uv init catalystlab`, struttura cartelle come sopra, `.gitignore`, primo commit "Initial scaffolding".
-2. **Copia pre-registration**: `cp <path>/prereg_step1_ai_infra.docx docs/`, commit "Add Step 1 pre-registration lockfile".
-3. **YAML settore**: scrivere `sectors/ai_infra.yaml` traducendo la prereg §2-§7 in formato strutturato. Schema in `config/schemas.py` (pydantic).
-4. **Loader Layer 1**: `config/loader.py` carica YAML, valida con pydantic, calcola hash SHA256 del file per il manifest.
-5. **Ingestion prezzi**: `ingestion/prices.py` wrapper yfinance, fetch + cache locale parquet, sanity check (no gap, no zero volumes).
-6. **Ingestion earnings**: `ingestion/earnings.py` fetch earnings dates, calcolo SUE se consensus disponibile, fallback a binario.
-7. **Cost model**: `ingestion/costs.py` con i parametri prereg §5.
-8. **Event log scaffolding**: creare CSV vuoti con header in `data/events/ai_infra/` per le 5 categorie.
-9. **Panel builder**: aggregare prezzi + eventi in panel dataset parquet.
-10. **Tests**: pytest su loader, prices fetch (mocked), cost model (deterministic).
+### Task list W2 (in ordine di esecuzione)
 
-### Definition of Done — Settimana 1
+1. **Curare event logs B/C/D/E** (manuale, ≥10-15 eventi totali per consentire smoke statistical test).
+2. **Beta estimation rolling**: helper in `eventstudy/abnormal_returns.py`, test contro statsmodels OLS.
+3. **AR / CAR per evento**: vectorized su panel parquet.
+4. **Aggregazione per categoria × window**: mean_CAR, hit_rate.
+5. **IC Spearman + p-value uncorrected**: `eventstudy/ic.py`.
+6. **Overlapping events policy**: documentata + test edge case.
+7. **CLI event-study**: subcommand + manifest.
+8. **Hypothesis tests** su AR vectorisation invariants.
+9. **Sanity check end-to-end**: smoke run su panel reale, verifica IC≈0 su categoria con eventi random (null check).
 
-- [ ] `uv run python -m catalystlab.cli build-panel --sector ai_infra` esegue end-to-end e produce `data/processed/panel_ai_infra.parquet`
-- [ ] Test coverage Layer 1 + 2: > 70%
-- [ ] README aggiornato con quickstart
-- [ ] Manifest JSON generato per il run, committato in `data/manifests/`
-- [ ] CLAUDE.md sezione "Current focus" aggiornata per Settimana 2
+### Definition of Done — Settimana 2
+
+- [ ] `uv run python -m catalystlab.cli event-study --sector ai_infra` produce `data/processed/event_metrics_ai_infra.parquet`
+- [ ] Test coverage Layer 3 ≥ 80%
+- [ ] AR/CAR computation ha invariant tests (hypothesis) + sanity check sui dati reali
+- [ ] CLAUDE.md "Current focus" aggiornata per Settimana 3 (Layer 4 + Layer 5)
+
+---
+
+## Settimana 1 — riepilogo (chiusa)
+
+Layer 1+2 completi. Tag `v0.1.0-step1-w1`.
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| 1 | Init repo + scaffolding | `5a76da1` | `uv` + struttura 5 layer |
+| 2 | Pre-reg + ADR 0001 | `54f44a1` | hybrid (not greenfield) reuse from EquiTeria |
+| 3 | YAML + pydantic schemas | `bb45cc8` | T+0 enforced, 5 cat A-E enforced, frozen models |
+| 4 | YAML loader + manifest | `cd254be` | sha256 audit anchor + git commit hash |
+| 5 | Prices fetcher (yfinance) | `f379f1e` | parquet cache, NaN drop, tz-strip, end-bump |
+| 6 | Earnings + SUE | `6516483` | prereg §3.1 formula verbatim, fallback binario |
+| 7 | Cost model Fineco | `ea34345` | Interpretation B (round-trip totals), 95.5 bps su €1k |
+| 8 | Event log scaffolds | `ae5f26e` | 5 CSV + README curatela |
+| 9 | Panel builder + CLI | `538e418` | end-to-end run verde, 6363 righe panel |
+| 10 | Test consolidation | _W1 closure_ | conftest fixture, hypothesis estesa, 77 test, 91% cov |
+
+**DoD W1 raggiunta**:
+
+- [x] `uv run python -m catalystlab.cli build-panel --sector ai_infra` produce `data/processed/panel_ai_infra.parquet` (6363 righe verificate end-to-end)
+- [x] Coverage Layer 1+2: 91% (target >70%)
+- [x] README aggiornato con quickstart funzionante
+- [x] Manifest JSON generato in `data/manifests/<timestamp>_ai_infra.json` (gitignored come da convenzione runtime)
+- [x] CLAUDE.md "Current focus" aggiornata a W2 (questo blocco)
+
+**Note operative emerse in W1** (per W2 e oltre):
+
+- yfinance earnings_dates è scrape-based e intermittently rate-limited → integration test difensivo (skip on empty), pipeline robusto a 0 righe
+- GEV (GE Vernova) IPO Apr 2024 → 309 giorni di gap nel periodo prereg pre-IPO; gap detection lo rileva. Decisione: il panel li lascia NaN, Layer 3 deve filtrare per ticker effettivamente tradato alla data dell'evento
+- Overlapping events policy attuale: priority A→E, first-match wins. Da rivedere in W2 (prereg §12 q.1)
+- `ar_vs_xlk_proxy` nel panel è simple diff (non beta-adjusted); Layer 3 sostituirà con AR β-corretto
 
 ---
 
@@ -300,10 +333,10 @@ Esempio già presente: `0001-hybrid-not-greenfield.md`.
 | Item | Status |
 |------|--------|
 | Pre-registration v1.0 | ✅ firmata, lockfile committato |
-| Repo init | ⏳ da fare (Settimana 1, Task 1) |
-| Layer 1 (config) | ⏳ Settimana 1 |
-| Layer 2 (ingestion) | ⏳ Settimana 1 |
-| Layer 3 (event study) | 🔒 Settimana 2 |
+| Repo init | ✅ W1 T1 (`5a76da1`) |
+| Layer 1 (config) | ✅ W1 T3-T4 |
+| Layer 2 (ingestion) | ✅ W1 T5-T9 (panel parquet end-to-end) |
+| Layer 3 (event study) | ⏳ Settimana 2 (in corso) |
 | Layer 4 (stats) | 🔒 Settimana 3 |
 | Layer 5 (reporting) | 🔒 Settimana 3 |
 | Step 1 run completo | 🔒 fine Settimana 3 |
@@ -311,4 +344,4 @@ Esempio già presente: `0001-hybrid-not-greenfield.md`.
 
 ---
 
-*Ultimo aggiornamento: 2026-05-10 — initialization*
+*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 1*
