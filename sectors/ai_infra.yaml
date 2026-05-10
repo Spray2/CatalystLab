@@ -1,0 +1,113 @@
+# Sector config — AI Infrastructure US
+# Authority: docs/prereg_step1_ai_infra.docx v1.0 (lockfile 2026-05-10).
+# Any modification of values here after data collection invalidates the run
+# statistically (prereg §0). Iterations require a v2 lockfile.
+
+sector: ai_infra
+display_name: "AI Infrastructure US"
+prereg_version: "1.0"
+prereg_lockfile_date: 2026-05-10
+random_seed: 42
+
+# §7 prereg — period
+period:
+  start: 2023-01-01
+  end: 2026-04-30
+
+# §2.1 prereg — universe (8 ticker)
+universe:
+  - {ticker: VRT,  name: "Vertiv Holdings",       market: NYSE,   type: cooling_power}
+  - {ticker: ETN,  name: "Eaton Corp",            market: NYSE,   type: electrical_distribution}
+  - {ticker: GEV,  name: "GE Vernova",            market: NYSE,   type: generation_electrification}
+  - {ticker: PWR,  name: "Quanta Services",       market: NYSE,   type: grid_construction}
+  - {ticker: CEG,  name: "Constellation Energy",  market: NASDAQ, type: nuclear_utility}
+  - {ticker: VST,  name: "Vistra Corp",           market: NYSE,   type: generation_nuclear}
+  - {ticker: ANET, name: "Arista Networks",       market: NYSE,   type: ai_networking}
+  - {ticker: MOD,  name: "Modine Manufacturing",  market: NYSE,   type: cooling_alternative}
+
+# §2.2 prereg — benchmark + §6.1 beta estimation params
+benchmarks:
+  primary: XLK    # SPDR Technology Select Sector — used for AR computation
+  secondary: SPY  # S&P 500 ETF — validation cross-check
+  beta_window_days: 252            # rolling window for β(i) estimation
+  beta_exclusion_window_days: 30   # exclude 30 days immediately before event
+
+# §4 prereg — holding windows. T+0 EXPLICITLY EXCLUDED (data leakage operativo
+# per fuso orario europeo). Any code that adds T+0 violates prereg §4 and §11.
+holding_windows: [1, 5, 20, 60]
+
+# §3 prereg — event categories (5 simultaneous hypotheses, BH-corrected at
+# stats.bh_alpha)
+categories:
+  A:
+    name: earnings
+    description: "Earnings beats/misses (PEAD)"
+    hypothesis: "drift CAR significantly different from zero in T+1..T+60 post earnings event"
+    magnitude_metric: SUE  # (actual - consensus) / std(consensus)
+    threshold:
+      type: abs_gt
+      value: 1.0  # |SUE| > 1.0 (top/bottom decile)
+    source: yfinance_earnings_dates_plus_manual_qc
+
+  B:
+    name: hyperscaler_ppa
+    description: "Power Purchase Agreement / data center deal with hyperscaler"
+    hypothesis: "abnormal return positivo in T+1..T+20"
+    magnitude_metric: binary  # optional: deal MW size
+    hyperscalers: [MSFT, META, AMZN, GOOGL, ORCL]
+    source: manual_curated_press_releases
+
+  C:
+    name: order_intake
+    description: "Press release with order intake / backlog update / capacity expansion"
+    hypothesis: "abnormal return positivo in T+1..T+20"
+    magnitude_metric: deal_value_usd  # fallback to binary if not disclosed
+    threshold:
+      type: any_of
+      conditions:
+        - {field: deal_value_usd,        op: gt, value: 100000000}   # > $100M
+        - {field: backlog_change_pct,    op: gt, value: 0.10}        # > 10%
+    source: manual_curated_8k_filings
+
+  D:
+    name: sector_shock
+    description: "Macro / policy event impacting whole sector (export rules, blackout, OPEC, etc.)"
+    hypothesis: "reaction + mean-reversion patterns at sector level"
+    magnitude_metric: xlk_t1_return_proxy  # prereg §3.4
+    source: manual_curated_news_headlines  # Reuters, FT
+
+  E:
+    name: analyst_rating
+    description: "Tier-1 bank rating change with target price revision"
+    hypothesis: "abnormal return in T+1..T+5"
+    magnitude_metric: target_change_pct
+    threshold:
+      type: abs_gt
+      value: 0.10  # |Δ price target| > 10%
+    tier1_banks: ["Goldman Sachs", "JP Morgan", "Morgan Stanley", "Bank of America", "Citi", "UBS"]
+    source: bloomberg_consensus_or_yahoo_recommendations
+
+# §5 prereg — cost model. Interpretation B (round-trip totals, see ADR 0002 if
+# disputed). Verified math on €1000 position: 73 bps commission + 7.5 bps spread
+# + 15 bps fx = 95.5 bps round-trip → within §5.2 range 75-100 bps.
+costs:
+  commission_per_execution_eur: 3.65    # ~$3.95 Fineco USA fixed per eseguito
+  spread_round_trip_bps: 7.5            # mid of §5.1 range 5-10 bps
+  fx_round_trip_bps: 15.0               # EUR/USD Fineco multivaluta
+  default_position_size_eur: 1000.0     # §5.1 worst-case for commission incidence
+
+# §6.3 prereg — statistical thresholds (binding, no quasi-success per §11)
+stats:
+  ic_threshold: 0.05            # IC > 0.05 required (Spearman)
+  hit_rate_threshold: 0.55      # hit_rate > 55% required
+  bh_alpha: 0.05                # FDR alpha for Benjamini-Hochberg over 5 categories
+  bootstrap_n: 1000             # 1000 resamples
+  bootstrap_ci: 0.95            # 95% CI must not cross zero
+
+# §12 prereg — open questions, resolved at implementation time. Tracked here so
+# the resolution lives next to the locked spec.
+open_questions:
+  overlapping_events_same_window: "TBD in Layer 3 (eventstudy/aggregation.py)"
+  earnings_vs_ppa_same_day: "TBD"
+  tier1_bank_membership: "Closed list — see categories.E.tier1_banks"
+  splits_spinoffs_handling: "Rely on yfinance adj_close for split adjustment"
