@@ -200,3 +200,242 @@ def test_beta_recovers_arbitrary_target_zero_noise(beta_target: float) -> None:
     r_i, r_b = _synth_returns(n=300, beta=beta_target, noise_std=0.0, seed=5)
     beta = estimate_beta(r_i, r_b, r_i.index[-1])
     assert beta == pytest.approx(beta_target, abs=1e-12)
+
+
+# ---------- AR / CAR ----------
+
+
+from catalystlab.eventstudy.abnormal_returns import (  # noqa: E402
+    EVENT_METRICS_COLUMNS,
+    compute_ar_car,
+    compute_event_metrics,
+)
+
+
+def test_ar_car_zero_when_returns_track_benchmark_at_beta_one() -> None:
+    """r_i = r_b, β=1 → AR ≡ 0 → CAR = 0."""
+    r_i, r_b = _synth_returns(n=400, beta=1.0, noise_std=0.0, seed=1)
+    event_pos = 350
+    car, n_obs = compute_ar_car(r_i, r_b, beta=1.0, event_date=r_i.index[event_pos], holding_window=10)
+    assert n_obs == 10
+    assert car == pytest.approx(0.0, abs=1e-12)
+
+
+def test_ar_car_constant_alpha_yields_k_times_alpha() -> None:
+    """r_i = a + b r_b -> AR = a each day -> CAR(window=k) = k*a."""
+    n = 400
+    rng = np.random.default_rng(123)
+    r_b = pd.Series(rng.normal(0, 0.01, n), index=pd.bdate_range("2022-01-03", periods=n))
+    alpha = 0.005
+    beta = 1.3
+    r_i = alpha + beta * r_b
+
+    event_pos = 350
+    for k in [1, 5, 10, 20]:
+        car, n_obs = compute_ar_car(r_i, r_b, beta=beta, event_date=r_i.index[event_pos], holding_window=k)
+        assert n_obs == k
+        assert car == pytest.approx(k * alpha, abs=1e-12)
+
+
+def test_ar_car_event_at_end_returns_nan() -> None:
+    r_i, r_b = _synth_returns(n=300, beta=1.0, noise_std=0.0)
+    car, n_obs = compute_ar_car(r_i, r_b, beta=1.0, event_date=r_i.index[-1], holding_window=5)
+    assert pd.isna(car)
+    assert n_obs == 0
+
+
+def test_ar_car_truncates_at_end_of_data() -> None:
+    """Event 3 days from end with window=10 -> only 3 obs."""
+    r_i, r_b = _synth_returns(n=300, beta=1.0, noise_std=0.0)
+    _car, n_obs = compute_ar_car(r_i, r_b, beta=1.0, event_date=r_i.index[-4], holding_window=10)
+    assert n_obs == 3
+
+
+def test_ar_car_nan_beta_yields_nan_car() -> None:
+    r_i, r_b = _synth_returns(n=300, beta=1.0, noise_std=0.0)
+    car, n_obs = compute_ar_car(r_i, r_b, beta=float("nan"), event_date=r_i.index[100], holding_window=5)
+    assert pd.isna(car)
+    assert n_obs == 0
+
+
+def test_ar_car_invalid_window_raises() -> None:
+    r_i, r_b = _synth_returns(n=300, beta=1.0, noise_std=0.0)
+    with pytest.raises(ValueError, match="holding_window"):
+        compute_ar_car(r_i, r_b, beta=1.0, event_date=r_i.index[100], holding_window=0)
+
+
+def test_ar_car_skips_t0() -> None:
+    """Per prereg §4: T+0 not counted. Window starts at T+1."""
+    n = 100
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    r_b = pd.Series([0.01] * n, index=dates)
+    # r_i: huge return on event day, small after.
+    r_i = pd.Series([0.01] * n, index=dates)
+    r_i.iloc[50] = 0.5  # T+0 spike
+    car, n_obs = compute_ar_car(r_i, r_b, beta=1.0, event_date=dates[50], holding_window=3)
+    # T+0 (the event day) is excluded; T+1, T+2, T+3 all have AR = 0
+    assert n_obs == 3
+    assert car == pytest.approx(0.0, abs=1e-12)
+
+
+# ---------- compute_event_metrics ----------
+
+
+def _make_synth_panel(
+    tickers: list[str],
+    n_days: int,
+    benchmark_returns: pd.Series,
+    beta_per_ticker: dict[str, float],
+    alpha_per_event: dict[tuple[str, int], float],  # (ticker, event_pos) -> alpha
+    seed: int = 0,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Build a synthetic long-format panel for compute_event_metrics tests."""
+    del seed  # noise-free panels for tests; rng kept out for determinism
+    rows = []
+    for t in tickers:
+        beta = beta_per_ticker[t]
+        ri = (beta * benchmark_returns).copy()
+        # No noise; tests rely on exact arithmetic.
+        for (tk, pos), alpha in alpha_per_event.items():
+            if tk == t:
+                # Inject alpha at positions pos+1..pos+200; the event itself
+                # is at `pos` and post-event returns get shifted by alpha.
+                ri.iloc[pos + 1 : pos + 200] = ri.iloc[pos + 1 : pos + 200] + alpha
+        for d, v in zip(benchmark_returns.index, ri.values, strict=False):
+            rows.append({
+                "date": d,
+                "ticker": t,
+                "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0,
+                "adj_close": 100.0, "volume": 1_000_000,
+                "return": v,
+                "ar_vs_xlk_proxy": v - benchmark_returns.loc[d],
+                "event_type": None,
+                "event_magnitude": float("nan"),
+            })
+    df = pd.DataFrame(rows)
+    return df, benchmark_returns
+
+
+def test_compute_event_metrics_recovers_constant_alpha() -> None:
+    """For an event with post-event alpha=0.005 and beta=1.5, CAR(k) approx k*alpha."""
+    n = 500
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    rng = np.random.default_rng(0)
+    bench = pd.Series(rng.normal(0, 0.01, n), index=dates, name="bench")
+
+    event_pos = 400  # leave room for window=20
+    panel, _ = _make_synth_panel(
+        tickers=["VRT"],
+        n_days=n,
+        benchmark_returns=bench,
+        beta_per_ticker={"VRT": 1.5},
+        alpha_per_event={("VRT", event_pos): 0.005},
+    )
+    # Mark the event at position event_pos.
+    mask = (panel["ticker"] == "VRT") & (panel["date"] == dates[event_pos])
+    panel.loc[mask, "event_type"] = "A"
+    panel.loc[mask, "event_magnitude"] = 1.0
+
+    metrics = compute_event_metrics(
+        panel,
+        bench,
+        holding_windows=[1, 5, 20],
+    )
+
+    assert list(metrics.columns) == EVENT_METRICS_COLUMNS
+    # 1 event x 3 windows = 3 rows
+    assert len(metrics) == 3
+    assert (metrics["ticker"] == "VRT").all()
+    # beta recovered approx 1.5
+    assert metrics["beta"].iloc[0] == pytest.approx(1.5, abs=1e-9)
+    # CAR = k * alpha = k * 0.005
+    for k in [1, 5, 20]:
+        row = metrics[metrics["holding_window"] == k].iloc[0]
+        assert row["n_obs"] == k
+        assert row["car"] == pytest.approx(k * 0.005, abs=1e-12)
+
+
+def test_compute_event_metrics_empty_panel() -> None:
+    metrics = compute_event_metrics(
+        pd.DataFrame(),
+        pd.Series([], dtype=float, index=pd.DatetimeIndex([])),
+        holding_windows=[1, 5],
+    )
+    assert metrics.empty
+    assert list(metrics.columns) == EVENT_METRICS_COLUMNS
+
+
+def test_compute_event_metrics_no_events_in_panel() -> None:
+    n = 100
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    bench = pd.Series([0.0] * n, index=dates)
+    panel = pd.DataFrame({
+        "date": dates,
+        "ticker": ["VRT"] * n,
+        "return": [0.0] * n,
+        "adj_close": [100.0] * n,
+        "ar_vs_xlk_proxy": [0.0] * n,
+        "event_type": [None] * n,
+        "event_magnitude": [float("nan")] * n,
+    })
+    metrics = compute_event_metrics(panel, bench, holding_windows=[1, 5])
+    assert metrics.empty
+
+
+def test_compute_event_metrics_invalid_window_raises() -> None:
+    n = 100
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    bench = pd.Series([0.0] * n, index=dates)
+    panel = pd.DataFrame({
+        "date": [dates[50]],
+        "ticker": ["VRT"],
+        "return": [0.01],
+        "adj_close": [100.0],
+        "ar_vs_xlk_proxy": [0.01],
+        "event_type": ["A"],
+        "event_magnitude": [1.0],
+    })
+    with pytest.raises(ValueError, match="holding_windows"):
+        compute_event_metrics(panel, bench, holding_windows=[0, 5])
+
+
+def test_compute_event_metrics_multi_window_replicates_beta() -> None:
+    """β is computed once per event and replicated across holding windows."""
+    n = 500
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    rng = np.random.default_rng(7)
+    bench = pd.Series(rng.normal(0, 0.01, n), index=dates)
+
+    panel, _ = _make_synth_panel(
+        tickers=["VRT"],
+        n_days=n,
+        benchmark_returns=bench,
+        beta_per_ticker={"VRT": 0.8},
+        alpha_per_event={},
+    )
+    panel.loc[(panel["ticker"] == "VRT") & (panel["date"] == dates[400]), "event_type"] = "B"
+    panel.loc[(panel["ticker"] == "VRT") & (panel["date"] == dates[400]), "event_magnitude"] = 100.0
+
+    metrics = compute_event_metrics(panel, bench, holding_windows=[1, 5, 20, 60])
+    betas = metrics["beta"].unique()
+    assert len(betas) == 1
+    assert betas[0] == pytest.approx(0.8, abs=1e-9)
+
+
+@given(alpha=st.floats(min_value=-0.05, max_value=0.05, allow_nan=False))
+@settings(max_examples=15, deadline=None)
+def test_compute_ar_car_linear_in_alpha(alpha: float) -> None:
+    """Hypothesis: for r_i = b r_b + a post-event, CAR(k) = k * a exactly."""
+    n = 400
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    rng = np.random.default_rng(2026)
+    r_b = pd.Series(rng.normal(0, 0.01, n), index=dates)
+    beta = 1.2
+
+    event_pos = 300
+    r_i = beta * r_b
+    r_i.iloc[event_pos + 1 :] = r_i.iloc[event_pos + 1 :] + alpha
+
+    car, n_obs = compute_ar_car(r_i, r_b, beta=beta, event_date=dates[event_pos], holding_window=20)
+    assert n_obs == 20
+    assert car == pytest.approx(20 * alpha, abs=1e-12)

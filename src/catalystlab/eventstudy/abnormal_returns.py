@@ -128,3 +128,178 @@ def estimate_betas(
         count=len(dates),
     )
     return pd.Series(betas, index=dates, name="beta")
+
+
+# ---------- AR / CAR computation (W2 T3) ----------
+
+
+EVENT_METRICS_COLUMNS: list[str] = [
+    "ticker",
+    "event_date",
+    "event_type",
+    "event_magnitude",
+    "holding_window",
+    "beta",
+    "n_obs",
+    "car",
+]
+
+
+def compute_ar_car(
+    returns_i: pd.Series,
+    returns_bench: pd.Series,
+    beta: float,
+    event_date: pd.Timestamp,
+    holding_window: int,
+) -> tuple[float, int]:
+    """Compute CAR(i, [t+1, t+holding_window]) and the count of observations.
+
+    Args:
+        returns_i: daily returns of asset i indexed by trading date.
+        returns_bench: daily returns of benchmark indexed by trading date.
+        beta: estimated β(i) for this event (from `estimate_beta`).
+        event_date: anchor date — AR is computed on dates strictly AFTER
+            this (T+1 to T+holding_window). Per prereg §4 T+0 is excluded.
+        holding_window: number of trading days post-event to accumulate.
+
+    Returns:
+        (car, n_obs):
+            car: sum of AR(t+1..t+holding_window) over available days. NaN
+                if β is NaN or no post-event observations are available.
+            n_obs: count of non-NaN AR contributions in the window
+                (≤ holding_window; smaller when the event is near the end
+                of the data or there are gaps).
+    """
+    if holding_window <= 0:
+        raise ValueError(f"holding_window must be > 0, got {holding_window}")
+    if pd.isna(beta):
+        return float("nan"), 0
+
+    df = _align_returns(returns_i, returns_bench)
+    if df.empty:
+        return float("nan"), 0
+
+    event_ts = pd.Timestamp(event_date)
+    valid_pre = df.index[df.index <= event_ts]
+    if len(valid_pre) == 0:
+        return float("nan"), 0
+
+    event_pos = df.index.get_loc(valid_pre[-1])
+    start_pos = event_pos + 1
+    end_pos = start_pos + holding_window
+
+    if start_pos >= len(df):
+        return float("nan"), 0
+
+    window = df.iloc[start_pos:end_pos]
+    if window.empty:
+        return float("nan"), 0
+
+    ar = window["i"] - beta * window["b"]
+    ar_valid = ar.dropna()
+    if ar_valid.empty:
+        return float("nan"), 0
+
+    return float(ar_valid.sum()), len(ar_valid)
+
+
+def compute_event_metrics(
+    panel: pd.DataFrame,
+    benchmark_returns: pd.Series,
+    holding_windows: Iterable[int],
+    beta_window_days: int = DEFAULT_BETA_WINDOW_DAYS,
+    beta_exclusion_days: int = DEFAULT_BETA_EXCLUSION_DAYS,
+) -> pd.DataFrame:
+    """Compute beta + CAR for every event in the panel x every holding window.
+
+    Args:
+        panel: long-format panel from `ingestion.panel.build_panel` with
+            columns including ``[date, ticker, return, event_type,
+            event_magnitude]``.
+        benchmark_returns: daily returns of the primary benchmark
+            (e.g. XLK), indexed by trading date.
+        holding_windows: iterable of post-event windows (e.g. [1, 5, 20, 60]).
+        beta_window_days: window length for β estimation.
+        beta_exclusion_days: exclusion buffer before the event for β.
+
+    Returns:
+        Long-format DataFrame with columns ``EVENT_METRICS_COLUMNS``,
+        sorted by ``(ticker, event_date, holding_window)``. One row per
+        (event x holding_window) combination. Beta is computed once per
+        event and replicated across the window rows for that event.
+
+    Notes:
+        Events whose β cannot be estimated (insufficient history etc.) get
+        NaN car and 0 n_obs. Events with valid β but no post-event data
+        (event near end of series, or pre-IPO ticker positioning) also get
+        NaN car / 0 n_obs.
+    """
+    windows = sorted(set(int(w) for w in holding_windows))
+    if not windows:
+        return pd.DataFrame(columns=EVENT_METRICS_COLUMNS)
+    if any(w <= 0 for w in windows):
+        raise ValueError("all holding_windows must be > 0 (T+0 excluded by prereg §4)")
+
+    if panel.empty:
+        return pd.DataFrame(columns=EVENT_METRICS_COLUMNS)
+
+    events = panel[panel["event_type"].notna()].copy()
+    if events.empty:
+        return pd.DataFrame(columns=EVENT_METRICS_COLUMNS)
+
+    returns_wide = panel.pivot_table(
+        index="date",
+        columns="ticker",
+        values="return",
+        aggfunc="first",
+    )
+    returns_wide.index = pd.DatetimeIndex(returns_wide.index)
+    bench = benchmark_returns.copy()
+    bench.index = pd.DatetimeIndex(bench.index)
+
+    rows: list[dict[str, object]] = []
+    for _, ev in events.iterrows():
+        ticker = str(ev["ticker"])
+        event_date = pd.Timestamp(ev["date"])
+        event_type = ev["event_type"]
+        event_magnitude = ev["event_magnitude"]
+
+        if ticker not in returns_wide.columns:
+            beta = float("nan")
+        else:
+            ri = returns_wide[ticker].dropna()
+            beta = estimate_beta(
+                ri,
+                bench,
+                event_date,
+                window_days=beta_window_days,
+                exclusion_days=beta_exclusion_days,
+            )
+
+        for hw in windows:
+            if pd.isna(beta) or ticker not in returns_wide.columns:
+                car, n_obs = float("nan"), 0
+            else:
+                car, n_obs = compute_ar_car(
+                    returns_wide[ticker],
+                    bench,
+                    beta,
+                    event_date,
+                    hw,
+                )
+
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "event_date": event_date,
+                    "event_type": event_type,
+                    "event_magnitude": event_magnitude,
+                    "holding_window": hw,
+                    "beta": beta,
+                    "n_obs": n_obs,
+                    "car": car,
+                }
+            )
+
+    out = pd.DataFrame(rows, columns=EVENT_METRICS_COLUMNS)
+    return out.sort_values(["ticker", "event_date", "holding_window"]).reset_index(drop=True)
