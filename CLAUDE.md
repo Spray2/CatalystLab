@@ -183,44 +183,67 @@ catalystlab/
 
 ---
 
-## Current focus — Settimana 4 (paper trading prep o closure)
+## Current focus — Settimana 5 (Paper trading 1 mese — operational shakedown)
 
-> Settimana 3 chiusa. Riepilogo W3 in `## Settimana 3 — riepilogo (chiusa)` qui sotto.
+> Settimana 4 chiusa. Step 1 ufficiale verdetto **POSITIVE** su A T+60 (PEAD). ADR 0003 documenta il risultato binding. Riepilogo W4 in `## Settimana 4 — riepilogo (chiusa)` qui sotto.
 
-### Obiettivo W4
+### Obiettivo W5
 
-A fine W3, sul panel smoke-data il framework restituisce `verdict=POSITIVE`
-con A T+60 (IC=0.319 BH-p=0.048 hit=62.5% CI=[0.063, 0.546]). Per prereg
-§8.1 questo dovrebbe far partire **paper trading 1 mese → live €5k cap**.
+Per prereg §8.1 il verdetto POSITIVE attiva **paper trading 1 mese** sulla combinazione vincente A T+60, come operational shakedown PRIMA del live trading (§8.1: "il paper serve solo a verificare la pipeline operativa, NON statistical re-validation").
 
-**Decisione W4 (binding)**:
+### Deliverable W5
 
-1. **Re-curation event logs** (per Step 1 reale, non smoke): aumentare
-   B/C/E sopra n=10 ciascuno per portare BH-p su solid ground (W2 smoke
-   ha n=2-4 → tutte ambigue). Earnings (cat A) sono auto e già a n=178.
-2. **Validation manuale 3 ticker random** earnings dates contro Yahoo
-   Finance web (prereg §3.1 quality gate).
-3. **Decisione** se il run smoke vale come Step 1 ufficiale o se serve
-   re-run con event logs estesi.
-4. **Eventualmente**: paper trading set-up (cap €0 reale, 1 mese
-   tracking della combinazione vincente A T+60).
+1. `paper_trading/A_T+60_2026-05.csv` — log mensile dei trade simulati su segnali cat A T+60
+2. Procedura operativa manuale: ogni nuovo earnings beat/miss con |SUE|>1.0 → paper trade entry T+1, exit T+60
+3. Dashboard semplice (estensione del report HTML?) con paper P&L tracker
 
-### Deliverable W4 (provisorio)
+### Task list W5
 
-- `docs/decisions/0002-step1-final-run.md` — ADR che documenta se il run
-  smoke vale o se serve re-run.
-- `paper_trading/<combinazione>_<period>.csv` — log di paper trading
-  (mese 1).
-- Report finale Step 1 (HTML) con decisione binding.
+1. Setup `paper_trading/` directory + schema CSV
+2. Definire workflow operativo settimanale: monitorare nuove earnings, calcolare SUE, registrare trade simulato
+3. Tracking 1 mese: maggio 2026 → giugno 2026
+4. Verifica esecuzione (FX, commissioni, slippage simulato realistico vs prereg §5)
+5. Decisione fine W5: paper OK → procede a live €5k cap; paper KO → reject Step 2 e re-evaluate
 
-### Task list W4 (sketched, finalize at start of W4 session)
+### Definition of Done — Settimana 5
 
-1. Estendere event logs C/E (target ≥10 per cat).
-2. Re-run `event-study` + `decide` con event logs aggiornati.
-3. Verifica manuale 3 random earnings dates.
-4. Decision: smoke run vale o re-run? ADR 0002.
-5. Se POSITIVO: setup paper trading 1 mese.
-6. Se NEGATIVO/AMBIGUO: closure documentata + sketch Rare Earths sector.
+- [ ] Paper trading log popolato per il mese
+- [ ] Almeno 1 trade simulato chiuso (entry T+1, exit T+60); idealmente 2-3
+- [ ] Verifica costo round-trip realizzato vs cost model prereg §5 (95.5 bps target su €1000)
+- [ ] CLAUDE.md "Current focus" aggiornata per Settimana 6 (live trading prep o re-evaluation)
+
+---
+
+## Settimana 4 — riepilogo (chiusa)
+
+Step 1 ufficiale eseguito secondo procedura ADR 0002 (re-curation deterministica → one-shot run binding).
+
+| Step | Deliverable |
+|---|---|
+| ADR 0002 | W3 smoke = framework verification, NOT Step 1; re-curation procedure |
+| Re-curation event logs | 15 → 27 eventi (commit `0643568`); coverage 8/8 ticker |
+| Re-run pipeline | `build-panel → event-study → decide` end-to-end su dataset esteso |
+| ADR 0003 | Step 1 verdetto **POSITIVE** binding |
+
+**Verdetto Step 1 ufficiale**:
+
+| Cat × Window | n_valid | IC | BH-p (n_tests=5) | hit_rate | CI 95% | mean_car_net |
+|---|---|---|---|---|---|---|
+| **A × T+60** | **65** | **0.319** | **0.0483** | **62.5%** | **[0.063, 0.546]** | **+573 bps** |
+
+Tutti e 4 i criteri prereg §6.3 superati ⇒ **POSITIVE** ⇒ paper trading 1 mese (W5) → live €5k cap.
+
+**Eventi cat C/E non vincenti ma flaggati come ambiguous**:
+- C × T+1, T+5, T+20, T+60 (n=4 ciascuno, IC alti ma BH e CI falliscono)
+- E × T+20 (n=11, IC=0.43 ma BH+CI falliscono)
+
+Per prereg §8.3 ambiguous = trattato come negativo per l'azione.
+
+**Tempo W4**: ~3 ore (curation 90 min + ADR 0002/0003 + commit + re-run).
+
+---
+
+## Settimana 3 — riepilogo (chiusa)
 
 ---
 
@@ -423,9 +446,12 @@ Esempio già presente: `0001-hybrid-not-greenfield.md`.
 | Layer 3 (event study) | ✅ W2 T2-T9 (event metrics + summary parquet end-to-end) |
 | Layer 4 (stats) | ✅ W3 T2-T5 (BH + bootstrap + temporal CV + stability) |
 | Layer 5 (reporting) | ✅ W3 T6-T7 (HTML report + decision.py + CLI decide) |
-| Step 1 run smoke | ✅ verdict POSITIVE su A T+60 (smoke data) |
-| Decision (positivo/negativo/ambiguo) | ⏳ W4 — re-curation o paper trading? |
+| Step 1 run smoke | ✅ verdict POSITIVE su A T+60 (smoke data, W3) |
+| Step 1 run ufficiale | ✅ verdict **POSITIVE** A T+60 (W4 re-curated, ADR 0003) |
+| Decision (positivo/negativo/ambiguo) | ✅ **POSITIVE** binding per prereg §8.1 |
+| Paper trading 1 mese | ⏳ W5 (in corso) |
+| Live trading €5k cap | 🔒 W6+ post-paper |
 
 ---
 
-*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 3*
+*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 4 (Step 1 POSITIVE)*
