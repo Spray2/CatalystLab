@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CatalystLab — {{ sector }} report</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: 0.3rem; }
+  h2 { margin-top: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; }
+  .verdict { padding: 0.7rem 1rem; border-radius: 6px; font-weight: 600;
+             margin: 1rem 0; }
+  .verdict.positive  { background: #e6f4ea; color: #137333; }
+  .verdict.negative  { background: #fce8e6; color: #a50e0e; }
+  .verdict.ambiguous { background: #fef7e0; color: #ea8600; }
+  table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 1.2rem; font-size: 0.92rem; }
+  th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #e0e0e0; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #f5f5f5; }
+  tr.winning { background: #e6f4ea; }
+  tr.ambiguous { background: #fef7e0; }
+  .meta { color: #555; font-size: 0.88rem; }
+  .meta div { margin: 0.2rem 0; }
+  .disclaimer { font-size: 0.82rem; color: #666; margin-top: 3rem;
+                border-top: 1px solid #ccc; padding-top: 1rem; }
+  code { background: #f0f0f0; padding: 0.05rem 0.3rem; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>CatalystLab — {{ sector }} ({{ display_name }})</h1>
+
+<div class="meta">
+  <div><strong>Generated:</strong> {{ timestamp_utc }}</div>
+  <div><strong>Pre-registration:</strong> v{{ prereg_version }} ({{ prereg_lockfile_date }})</div>
+  <div><strong>Sector YAML SHA-256:</strong> <code>{{ sector_yaml_sha256[:16] }}…</code></div>
+  <div><strong>Git commit:</strong> <code>{{ git_commit[:16] if git_commit else 'unknown' }}…</code></div>
+  <div><strong>Universe:</strong> {{ universe | join(', ') }}</div>
+  <div><strong>Benchmark:</strong> {{ benchmark_primary }} (primary), {{ benchmark_secondary }} (secondary)</div>
+  <div><strong>Period:</strong> {{ period_start }} → {{ period_end }}</div>
+  <div><strong>Holding windows:</strong> {{ holding_windows | join(', ') }} (T+0 excluded per prereg §4)</div>
+  <div><strong>Round-trip cost:</strong> {{ '%.2f' | format(cost_bps_round_trip) }} bps on €{{ cost_position_eur }} position</div>
+</div>
+
+<h2>Decision (prereg §8)</h2>
+
+<div class="verdict {{ decision.verdict }}">
+  Verdict: <strong>{{ decision.verdict | upper }}</strong>
+</div>
+
+<p>{{ decision.rationale }}</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Threshold</th><th>Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>IC base threshold (prereg §6.3)</td><td>&gt; {{ decision.thresholds.ic_threshold }}</td></tr>
+    <tr><td>Hit rate threshold</td><td>&gt; {{ decision.thresholds.hit_rate_threshold }}</td></tr>
+    <tr><td>BH-FDR alpha (5 tests)</td><td>&lt; {{ decision.thresholds.bh_alpha }}</td></tr>
+    <tr><td>Bootstrap CI level</td><td>95% (CI must not cross 0)</td></tr>
+  </tbody>
+</table>
+
+<h2>Per-combination summary</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Cat</th><th>Window</th><th>n_valid</th>
+      <th>IC</th><th>p-value</th><th>BH-p</th><th>CI 95%</th>
+      <th>Hit rate</th><th>Mean CAR net (bps)</th><th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in summary_rows %}
+    <tr class="{{ 'winning' if row.is_winning else ('ambiguous' if row.is_ambiguous else '') }}">
+      <td>{{ row.event_type }}</td>
+      <td>T+{{ row.holding_window }}</td>
+      <td>{{ row.n_valid if row.n_valid is not none else '—' }}</td>
+      <td>{{ '%.3f' | format(row.ic) if row.ic is not none and row.ic == row.ic else '—' }}</td>
+      <td>{{ '%.3f' | format(row.ic_pvalue) if row.ic_pvalue is not none and row.ic_pvalue == row.ic_pvalue else '—' }}</td>
+      <td>{{ '%.3f' | format(row.ic_pvalue_bh) if row.ic_pvalue_bh is not none and row.ic_pvalue_bh == row.ic_pvalue_bh else '—' }}</td>
+      <td>{% if row.ic_ci_lower is not none and row.ic_ci_lower == row.ic_ci_lower %}[{{ '%.3f' | format(row.ic_ci_lower) }}, {{ '%.3f' | format(row.ic_ci_upper) }}]{% else %}—{% endif %}</td>
+      <td>{{ '%.1f%%' | format(row.hit_rate * 100) if row.hit_rate is not none and row.hit_rate == row.hit_rate else '—' }}</td>
+      <td>{{ '%.0f' | format(row.mean_car_net * 10000) if row.mean_car_net is not none and row.mean_car_net == row.mean_car_net else '—' }}</td>
+      <td>
+        {% if row.is_winning %}WIN
+        {% elif row.is_ambiguous %}AMBIG
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if temporal_rows %}
+<h2>Temporal decay (split {{ temporal_split_date }})</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Cat</th><th>Window</th>
+      <th>n pre</th><th>IC pre</th>
+      <th>n post</th><th>IC post</th>
+      <th>Decay</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in temporal_rows %}
+    <tr>
+      <td>{{ row.event_type }}</td>
+      <td>T+{{ row.holding_window }}</td>
+      <td>{{ row.n_pre }}</td>
+      <td>{{ '%.3f' | format(row.ic_pre) if row.ic_pre is not none and row.ic_pre == row.ic_pre else '—' }}</td>
+      <td>{{ row.n_post }}</td>
+      <td>{{ '%.3f' | format(row.ic_post) if row.ic_post is not none and row.ic_post == row.ic_post else '—' }}</td>
+      <td>{{ '%.3f' | format(row.decay) if row.decay is not none and row.decay == row.decay else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if stability_rows %}
+<h2>Stability check (top-{{ stability_k }} |CAR| events removed)</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Cat</th><th>Window</th>
+      <th>n full</th><th>IC full</th>
+      <th>n after</th><th>IC after</th>
+      <th>Drift</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in stability_rows %}
+    <tr>
+      <td>{{ row.event_type }}</td>
+      <td>T+{{ row.holding_window }}</td>
+      <td>{{ row.n_full }}</td>
+      <td>{{ '%.3f' | format(row.ic_full) if row.ic_full is not none and row.ic_full == row.ic_full else '—' }}</td>
+      <td>{{ row.n_after }}</td>
+      <td>{{ '%.3f' | format(row.ic_after_top_k) if row.ic_after_top_k is not none and row.ic_after_top_k == row.ic_after_top_k else '—' }}</td>
+      <td>{{ '%.3f' | format(row.ic_drift) if row.ic_drift is not none and row.ic_drift == row.ic_drift else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<div class="disclaimer">
+<strong>Disclaimer (prereg §13):</strong>
+Questo documento è un piano di ricerca personale. Non costituisce consulenza
+finanziaria, raccomandazione di investimento, o offerta di servizi. L'autore
+non è un consulente finanziario registrato CONSOB. Tutti i risultati di
+Step 1 sono trattati come dati di ricerca, non come segnali di acquisto.
+</div>
+
+</body>
+</html>

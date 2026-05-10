@@ -35,6 +35,12 @@ from catalystlab.ingestion.prices import (
     expected_trading_days,
     fetch_prices,
 )
+from catalystlab.reporting.decision import annotate_decision_flags, decide
+from catalystlab.reporting.html_report import render_report
+from catalystlab.stats.bh_correction import apply_bh_per_holding_window
+from catalystlab.stats.bootstrap import apply_bootstrap_to_summary
+from catalystlab.stats.stability import compute_stability
+from catalystlab.stats.temporal_cv import DEFAULT_SPLIT_DATE, compute_temporal_decay
 
 logger = logging.getLogger("catalystlab")
 
@@ -273,6 +279,143 @@ def cmd_event_study(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_decide(args: argparse.Namespace) -> int:
+    repo_root = Path.cwd()
+    sectors_dir = repo_root / "sectors"
+    metrics_path = (
+        repo_root / "data" / "processed" / f"event_metrics_{args.sector}.parquet"
+    )
+    summary_path = (
+        repo_root / "data" / "processed" / f"event_summary_{args.sector}.parquet"
+    )
+    out_dir = repo_root / "data" / "processed"
+    manifest_dir = repo_root / "data" / "manifests"
+
+    if not metrics_path.is_file() or not summary_path.is_file():
+        logger.error(
+            "event-study artifacts missing (%s / %s) — run `event-study` first",
+            metrics_path,
+            summary_path,
+        )
+        return 2
+
+    logger.info("loading sector config: %s", args.sector)
+    sector_cfg, sector_sha = load_sector(args.sector, sectors_dir=sectors_dir)
+
+    logger.info("loading event metrics + summary parquet")
+    metrics = pd.read_parquet(metrics_path)
+    summary = pd.read_parquet(summary_path)
+
+    logger.info("applying BH-FDR correction per holding window (n_tests=5)")
+    summary = apply_bh_per_holding_window(
+        summary,
+        alpha=sector_cfg.stats.bh_alpha,
+        pvalue_col="ic_pvalue",
+        n_tests_per_window=5,
+    )
+
+    logger.info(
+        "computing bootstrap CI (n_resample=%d, seed=%d)",
+        sector_cfg.stats.bootstrap_n,
+        sector_cfg.random_seed,
+    )
+    summary = apply_bootstrap_to_summary(
+        metrics,
+        summary,
+        n_resample=sector_cfg.stats.bootstrap_n,
+        ci_level=sector_cfg.stats.bootstrap_ci,
+        seed=sector_cfg.random_seed,
+    )
+
+    logger.info("computing temporal decay (split %s)", DEFAULT_SPLIT_DATE.date())
+    temporal = compute_temporal_decay(metrics)
+
+    logger.info("computing stability (top-5 |CAR| removal)")
+    stability = compute_stability(metrics, k_top=5)
+
+    summary_annotated = annotate_decision_flags(
+        summary,
+        ic_threshold=sector_cfg.stats.ic_threshold,
+        hit_rate_threshold=sector_cfg.stats.hit_rate_threshold,
+        bh_alpha=sector_cfg.stats.bh_alpha,
+    )
+
+    decision_obj = decide(
+        summary_annotated,
+        ic_threshold=sector_cfg.stats.ic_threshold,
+        hit_rate_threshold=sector_cfg.stats.hit_rate_threshold,
+        bh_alpha=sector_cfg.stats.bh_alpha,
+    )
+    logger.info("decision: %s (%s)", decision_obj["verdict"].upper(), decision_obj["rationale"])
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    decision_path = out_dir / f"decision_{args.sector}.json"
+    with decision_path.open("w", encoding="utf-8") as f:
+        json.dump(decision_obj, f, indent=2, default=str)
+    logger.info("decision artifact: %s", decision_path)
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    cost_bps = compute_cost_bps(sector_cfg.costs)
+    html = render_report(
+        sector=sector_cfg.sector,
+        display_name=sector_cfg.display_name,
+        prereg_version=sector_cfg.prereg_version,
+        prereg_lockfile_date=sector_cfg.prereg_lockfile_date.isoformat(),
+        period_start=sector_cfg.period.start.isoformat(),
+        period_end=sector_cfg.period.end.isoformat(),
+        universe=[t.ticker for t in sector_cfg.universe],
+        benchmark_primary=sector_cfg.benchmarks.primary,
+        benchmark_secondary=sector_cfg.benchmarks.secondary,
+        holding_windows=sector_cfg.holding_windows,
+        cost_bps_round_trip=cost_bps,
+        cost_position_eur=sector_cfg.costs.default_position_size_eur,
+        sector_yaml_sha256=sector_sha,
+        git_commit=None,  # filled by manifest below
+        timestamp_utc=datetime.now(UTC).isoformat(),
+        decision=decision_obj,
+        summary_full=summary_annotated,
+        temporal=temporal,
+        stability=stability,
+        temporal_split_date=str(DEFAULT_SPLIT_DATE.date()),
+        stability_k=5,
+    )
+    report_path = out_dir / f"report_{args.sector}.html"
+    report_path.write_text(html, encoding="utf-8")
+    logger.info("report HTML: %s", report_path)
+
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / f"{timestamp}_{args.sector}_decide.json"
+    manifest = compute_manifest(
+        args.sector,
+        sector_sha,
+        runtime_params={
+            "stage": "decide",
+            "verdict": decision_obj["verdict"],
+            "n_winning": decision_obj["n_winning"],
+            "n_ambiguous": decision_obj["n_ambiguous"],
+            "decision_path": str(decision_path.relative_to(repo_root)),
+            "report_path": str(report_path.relative_to(repo_root)),
+            "metrics_path": str(metrics_path.relative_to(repo_root)),
+            "summary_path": str(summary_path.relative_to(repo_root)),
+            "thresholds": decision_obj["thresholds"],
+            "bootstrap_n": sector_cfg.stats.bootstrap_n,
+            "bootstrap_seed": sector_cfg.random_seed,
+        },
+        repo_dir=repo_root,
+    )
+    with manifest_path.open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, default=str)
+    logger.info("manifest written: %s", manifest_path)
+
+    sys.stdout.write(f"verdict:  {decision_obj['verdict'].upper()}\n")
+    sys.stdout.write(f"decision: {decision_path}\n")
+    sys.stdout.write(f"report:   {report_path}\n")
+    sys.stdout.write(f"manifest: {manifest_path}\n")
+    sys.stdout.write(f"winning:  {decision_obj['n_winning']}\n")
+    sys.stdout.write(f"ambig:    {decision_obj['n_ambiguous']}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="catalystlab",
@@ -300,6 +443,10 @@ def main(argv: list[str] | None = None) -> int:
     es = sub.add_parser("event-study", help="compute beta/AR/CAR/IC from panel + event logs")
     es.add_argument("--sector", required=True, help="sector name (matches sectors/<name>.yaml)")
     es.set_defaults(func=cmd_event_study)
+
+    de = sub.add_parser("decide", help="apply Layer 4 stats + emit decision artifact + HTML report")
+    de.add_argument("--sector", required=True, help="sector name (matches sectors/<name>.yaml)")
+    de.set_defaults(func=cmd_decide)
 
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)

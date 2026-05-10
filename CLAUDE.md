@@ -183,43 +183,88 @@ catalystlab/
 
 ---
 
-## Current focus — Settimana 3 (Layer 4 stats + Layer 5 reporting)
+## Current focus — Settimana 4 (paper trading prep o closure)
 
-> Settimana 2 chiusa. Riepilogo W2 in `## Settimana 2 — riepilogo (chiusa)` qui sotto. W1 in `## Settimana 1 — riepilogo (chiusa)`.
+> Settimana 3 chiusa. Riepilogo W3 in `## Settimana 3 — riepilogo (chiusa)` qui sotto.
 
-### Obiettivo W3
+### Obiettivo W4
 
-Implementare **Layer 4 — statistical validation** + **Layer 5 — reporting** sopra `event_metrics_<sector>.parquet` e `event_summary_<sector>.parquet` prodotti in W2. A fine W3 il framework deve produrre il decision artifact che dichiara Step 1 positivo / negativo / ambiguo per `ai_infra` per prereg §8.
+A fine W3, sul panel smoke-data il framework restituisce `verdict=POSITIVE`
+con A T+60 (IC=0.319 BH-p=0.048 hit=62.5% CI=[0.063, 0.546]). Per prereg
+§8.1 questo dovrebbe far partire **paper trading 1 mese → live €5k cap**.
 
-### Deliverable W3
+**Decisione W4 (binding)**:
 
-1. `stats/bh_correction.py` — Benjamini-Hochberg FDR su 5 test simultanei (5 categorie A-E). Soglia BH-corrected ≈ 0.071 (stimata empiricamente).
-2. `stats/bootstrap.py` — bootstrap CI 95% su IC con 1000 resample (prereg §6.4). Stable across categories with same seed (sector.random_seed).
-3. `stats/temporal_cv.py` — split pre-2025 vs 2025-2026 per detection di decay.
-4. `reporting/html_report.py` — Jinja2 template che combina event_summary + BH + bootstrap CI in un report HTML statico.
-5. `reporting/decision.py` — decisione binaria positivo/negativo/ambiguo per prereg §8.1-§8.3.
-6. CLI subcommand: `catalystlab decide --sector ai_infra` orchestra Layer 4 + Layer 5.
+1. **Re-curation event logs** (per Step 1 reale, non smoke): aumentare
+   B/C/E sopra n=10 ciascuno per portare BH-p su solid ground (W2 smoke
+   ha n=2-4 → tutte ambigue). Earnings (cat A) sono auto e già a n=178.
+2. **Validation manuale 3 ticker random** earnings dates contro Yahoo
+   Finance web (prereg §3.1 quality gate).
+3. **Decisione** se il run smoke vale come Step 1 ufficiale o se serve
+   re-run con event logs estesi.
+4. **Eventualmente**: paper trading set-up (cap €0 reale, 1 mese
+   tracking della combinazione vincente A T+60).
 
-### Task list W3
+### Deliverable W4 (provisorio)
 
-1. Coverage gap fill: cat D xlk_t1_return aware fix (currently runtime in CLI; consider moving into ingestion pipeline).
-2. BH correction implementation + tests.
-3. Bootstrap CI con stable seed; verifica determinismo.
-4. Temporal CV split test.
-5. Stability check: rimozione iterativa dei top 5 eventi per cat (prereg §6.4).
-6. HTML report template + decision.json artifact.
-7. CLI `decide` subcommand.
-8. Test coverage Layer 4 ≥ 80% (CLAUDE.md "Tests" — Layer 3-4 non-negoziabili).
-9. Final smoke run su panel reale → decision.json.
+- `docs/decisions/0002-step1-final-run.md` — ADR che documenta se il run
+  smoke vale o se serve re-run.
+- `paper_trading/<combinazione>_<period>.csv` — log di paper trading
+  (mese 1).
+- Report finale Step 1 (HTML) con decisione binding.
 
-### Definition of Done — Settimana 3
+### Task list W4 (sketched, finalize at start of W4 session)
 
-- [ ] `uv run python -m catalystlab.cli decide --sector ai_infra` produce `data/processed/decision_ai_infra.json` + `report_ai_infra.html`
-- [ ] BH-corrected p-values per ogni (cat, holding_window) calcolati in Layer 4
-- [ ] Bootstrap CI 95% riportato per ogni IC; deterministic con seed
-- [ ] Decision: positivo/negativo/ambiguo per prereg §8 binding
-- [ ] Test coverage Layer 4 ≥ 80%
-- [ ] CLAUDE.md "Current focus" aggiornata per Settimana 4 (paper trading prep o closure)
+1. Estendere event logs C/E (target ≥10 per cat).
+2. Re-run `event-study` + `decide` con event logs aggiornati.
+3. Verifica manuale 3 random earnings dates.
+4. Decision: smoke run vale o re-run? ADR 0002.
+5. Se POSITIVO: setup paper trading 1 mese.
+6. Se NEGATIVO/AMBIGUO: closure documentata + sketch Rare Earths sector.
+
+---
+
+## Settimana 3 — riepilogo (chiusa)
+
+Layer 4 (stats) + Layer 5 (reporting) completi. Pipeline `build-panel
+→ event-study → decide` end-to-end verde. Smoke verdict: **POSITIVE**
+con A T+60.
+
+| # | Task | Deliverable |
+|---|---|---|
+| 2 | BH-FDR correction | `stats/bh_correction.py::bh_correct_pvalues + apply_bh_per_holding_window`, n_tests=5 enforced |
+| 3 | Bootstrap CI 95% | `stats/bootstrap.py::bootstrap_ic_ci + apply_bootstrap_to_summary`, deterministic seed=42 (random_seed YAML) |
+| 4 | Temporal CV (pre/post 2025) | `stats/temporal_cv.py::compute_temporal_decay`, decay = ic_post - ic_pre |
+| 5 | Stability check (top-5 |CAR|) | `stats/stability.py::compute_stability` |
+| 7 | Decision logic | `reporting/decision.py::decide`, verdict positive/negative/ambiguous + winning/ambiguous_combinations |
+| 6 | HTML report | `reporting/html_report.py::render_report` + `templates/report.html.j2` |
+| 7 | CLI `decide` | `catalystlab decide --sector ai_infra` orchestra Layer 4+5 → decision.json + report.html |
+| 8 | Test coverage gate | 223 tests cumulativi (~91%); Layer 4 stats 100% per modulo |
+| 9 | End-to-end smoke | Verdict POSITIVE confermato su panel reale |
+
+**Smoke run W3 (decide su panel + 235 eventi W2)**:
+
+| Cat × Window | n_valid | IC | BH-p | hit_rate | CI 95% | Status |
+|---|---|---|---|---|---|---|
+| **A × 60** | **65** | **0.319** | **0.0483** | **62.5%** | **[0.063, 0.546]** | **WIN** |
+| C × 1 | 3 | 1.000 | NaN | 100% | NaN (n<2 valid bootstrap) | ambig (BH NaN) |
+| C × 5 | 3 | 1.000 | NaN | 100% | NaN | ambig (BH NaN) |
+| E × 60 | 4 | 0.738 | 0.437 | 75% | [-0.65, +0.95] | ambig (BH+CI fail) |
+
+**Verdict: POSITIVE per prereg §8.1**. ADR 0002 in W4 deciderà se questo
+smoke conta come Step 1 ufficiale o se serve re-run con event logs C/E
+estesi (n=2-4 sono comunque sotto-poteri).
+
+**Issues note (per W4)**:
+
+- Cat C / E hanno n troppo piccolo per BH solido → re-curation
+  necessaria prima della dichiarazione di Step 1 ufficiale
+- earnings.csv auto-overwritten conflitta col committed scaffold —
+  outstanding architectural cleanup
+- HTML report ha colonne ma nessun grafico (matplotlib/plotly fuori
+  scope W3) — vedere se utile in W4
+- Cat D `xlk_t1_return` runtime fill (T1 W3 deferred) funziona ma il
+  layering è messy (CLI lo fa) — refactoring possibile
 
 ---
 
@@ -376,11 +421,11 @@ Esempio già presente: `0001-hybrid-not-greenfield.md`.
 | Layer 1 (config) | ✅ W1 T3-T4 |
 | Layer 2 (ingestion) | ✅ W1 T5-T9 (panel parquet end-to-end) |
 | Layer 3 (event study) | ✅ W2 T2-T9 (event metrics + summary parquet end-to-end) |
-| Layer 4 (stats) | ⏳ Settimana 3 (in corso) |
-| Layer 5 (reporting) | ⏳ Settimana 3 |
-| Step 1 run completo | 🔒 fine Settimana 3 |
-| Decision (positivo/negativo/ambiguo) | 🔒 inizio Settimana 4 |
+| Layer 4 (stats) | ✅ W3 T2-T5 (BH + bootstrap + temporal CV + stability) |
+| Layer 5 (reporting) | ✅ W3 T6-T7 (HTML report + decision.py + CLI decide) |
+| Step 1 run smoke | ✅ verdict POSITIVE su A T+60 (smoke data) |
+| Decision (positivo/negativo/ambiguo) | ⏳ W4 — re-curation o paper trading? |
 
 ---
 
-*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 2*
+*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 3*
