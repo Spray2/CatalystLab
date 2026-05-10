@@ -1,1 +1,4 @@
 ticker,announce_date,deal_value_usd,backlog_change_pct,source_url,note
+GEV,2025-07-22,500000000,,https://www.gevernova.com/news/press-releases/ge-vernova-crusoe-announce-major-29-unit-aeroderivative-gas-turbine-deliver-ai-data-centers,Crusoe 19 incremental LM2500XPRESS (29 total ~1GW). deal_value_usd is midpoint estimate of $200-570M range (not officially disclosed)
+PWR,2025-11-05,,,https://www.aep.com/news/stories/view/10555/,AEP-Quanta strategic partnership framework backing AEP $72B capital plan. deal_value not disclosed; binary-fallback per prereg §3.3
+MOD,2025-02-27,180000000,,https://investors.modine.com/news/news-details/2025/Modine-Secures-180-Million-in-Orders-for-Data-Center-Cooling-Systems/default.aspx,Airedale by Modine cooling systems; new AI infrastructure customer

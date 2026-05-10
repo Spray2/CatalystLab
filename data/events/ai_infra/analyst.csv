@@ -1,1 +1,5 @@
 ticker,event_date,bank,action,old_target,new_target,target_change_pct,source_url
+VRT,2026-02-13,Morgan Stanley,target_change,200.0,285.0,0.425,https://finance.yahoo.com/markets/stocks/articles/morgan-stanley-oppenheimer-goldman-sachs-204328851.html
+VRT,2026-02-13,Goldman Sachs,target_change,204.0,277.0,0.358,https://www.gurufocus.com/news/8611608/vertiv-holdings-vrt-analyst-rating-update-goldman-sachs-raises-price-target-to-277-vrt-stock-news
+CEG,2024-09-23,Morgan Stanley,target_change,233.0,313.0,0.343,https://www.cnbc.com/2024/09/23/morgan-stanley-sees-upside-for-ceg-other-stocks-after-nuclear-restart.html
+GEV,2025-06-24,Morgan Stanley,target_change,422.0,511.0,0.211,https://www.investing.com/news/stock-market-news/ge-vernova-price-target-raised-to-511-from-422-at-morgan-stanley-93CH-4107429

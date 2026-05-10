@@ -1,1 +1,7 @@
 event_date,event_type,description,xlk_t1_return,source_url
+2023-10-17,gpu_export_controls,BIS interim final rules expanding October 2022 export controls covering processors built on same architectures,,https://www.congress.gov/crs-product/R48642
+2024-07-10,virginia_data_center_disconnect,Lightning arrestor failure on 230 kV line caused 1.5 GW data center loads to disconnect across 60 substations,,https://www.datacenterdynamics.com/en/news/virginia-narrowly-avoided-power-cuts-when-60-data-centers-dropped-off-the-grid-at-once/
+2025-01-15,ai_diffusion_rule,BIS Framework for Artificial Intelligence Diffusion - global performance thresholds blocking H100/H200 to China,,https://builtin.com/articles/trump-lifts-ai-chip-ban-china-nvidia
+2025-01-27,deepseek_shock,DeepSeek R1 release causing AI infra selloff (NVDA -17% VRT -30% CEG -21% VST -28% GEV -21%),,https://www.cnn.com/2025/01/27/tech/deepseek-stocks-ai-china
+2025-12-08,trump_h200_reversal,Trump announces H200 sales to approved Chinese customers reversing prior restrictions,,https://builtin.com/articles/trump-lifts-ai-chip-ban-china-nvidia
+2026-01-13,bis_license_revision,BIS rule revising license policy for H200 MI325X case-by-case review,,https://www.bis.gov/press-release/department-commerce-revises-license-review-policy-semiconductors-exported-china
