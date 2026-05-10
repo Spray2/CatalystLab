@@ -32,7 +32,7 @@ class Period(_Frozen):
     end: date
 
     @model_validator(mode="after")
-    def end_after_start(self) -> "Period":
+    def end_after_start(self) -> Period:
         if self.end < self.start:
             raise ValueError(f"period.end ({self.end}) must be >= start ({self.start})")
         return self
@@ -45,7 +45,7 @@ class Benchmarks(_Frozen):
     beta_exclusion_window_days: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def exclusion_lt_window(self) -> "Benchmarks":
+    def exclusion_lt_window(self) -> Benchmarks:
         if self.beta_exclusion_window_days >= self.beta_window_days:
             raise ValueError(
                 f"beta_exclusion_window_days ({self.beta_exclusion_window_days}) must be < "
@@ -66,7 +66,7 @@ class Threshold(_Frozen):
     conditions: list[ThresholdCondition] | None = None
 
     @model_validator(mode="after")
-    def shape_matches_type(self) -> "Threshold":
+    def shape_matches_type(self) -> Threshold:
         if self.type == "any_of":
             if not self.conditions:
                 raise ValueError("threshold type=any_of requires non-empty conditions")
