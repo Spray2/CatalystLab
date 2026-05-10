@@ -190,3 +190,34 @@ def test_compute_ic_constant_magnitude_yields_nan() -> None:
     assert row["n_pairs"] == 4
     assert pd.isna(row["ic"])
     assert pd.isna(row["ic_pvalue"])
+
+
+# ---------- hypothesis property tests (W2 T8) ----------
+
+
+from hypothesis import given, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
+
+
+@given(
+    shift=st.floats(min_value=-10.0, max_value=10.0, allow_nan=False),
+    scale=st.floats(min_value=0.01, max_value=100.0, allow_nan=False),
+)
+@settings(max_examples=20, deadline=None)
+def test_ic_invariant_under_affine_magnitude_transform(shift: float, scale: float) -> None:
+    """Spearman is rank-based -> IC unchanged under positive affine transform of magnitude."""
+    rng = np.random.default_rng(2026)
+    n = 50
+    base_metrics = _metrics(
+        [
+            ("A", 5, float(rng.normal()), float(rng.normal() * 0.01))
+            for _ in range(n)
+        ]
+    )
+    transformed_metrics = base_metrics.copy()
+    transformed_metrics["event_magnitude"] = (
+        base_metrics["event_magnitude"] * scale + shift
+    )
+    ic_base = compute_ic(base_metrics).iloc[0]["ic"]
+    ic_trans = compute_ic(transformed_metrics).iloc[0]["ic"]
+    assert ic_base == pytest.approx(ic_trans, abs=1e-12)

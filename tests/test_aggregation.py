@@ -201,3 +201,53 @@ def test_aggregate_output_schema_and_dtypes() -> None:
     out = aggregate_event_metrics(metrics)
     assert list(out.columns) == AGGREGATION_COLUMNS
     assert out["holding_window"].dtype == np.int64 or out["holding_window"].dtype == int
+
+
+# ---------- hypothesis property tests (W2 T8) ----------
+
+
+from hypothesis import given, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
+
+
+@given(
+    cars=st.lists(
+        st.floats(min_value=-0.5, max_value=0.5, allow_nan=False),
+        min_size=2,
+        max_size=20,
+    ),
+    cost_bps=st.floats(min_value=0.0, max_value=200.0, allow_nan=False),
+)
+@settings(max_examples=25, deadline=None)
+def test_aggregate_hit_rate_in_unit_interval(cars: list[float], cost_bps: float) -> None:
+    """hit_rate is always in [0, 1] when defined (never < 0, never > 1)."""
+    metrics = pd.DataFrame(
+        [
+            _metrics_row("VRT", "2024-01-02", "B", 1.0, 5, 1.0, 5, c)
+            for c in cars
+        ]
+    )
+    out = aggregate_event_metrics(metrics, cost_bps_round_trip=cost_bps)
+    if not out.empty:
+        hr = out.iloc[0]["hit_rate"]
+        if pd.notna(hr):
+            assert 0.0 <= hr <= 1.0
+
+
+@given(
+    cost_bps=st.floats(min_value=0.0, max_value=500.0, allow_nan=False),
+    car=st.floats(min_value=-0.2, max_value=0.2, allow_nan=False),
+)
+@settings(max_examples=30, deadline=None)
+def test_aggregate_mean_car_net_equals_gross_minus_cost(
+    cost_bps: float, car: float
+) -> None:
+    """mean_car_net == mean_car_gross - cost_bps/10000 exactly."""
+    metrics = pd.DataFrame(
+        [_metrics_row("VRT", "2024-01-02", "B", 1.0, 5, 1.0, 5, car)]
+    )
+    out = aggregate_event_metrics(metrics, cost_bps_round_trip=cost_bps)
+    row = out.iloc[0]
+    assert row["mean_car_net"] == pytest.approx(
+        row["mean_car_gross"] - cost_bps / 10_000.0, abs=1e-12
+    )

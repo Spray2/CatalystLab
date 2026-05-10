@@ -183,41 +183,80 @@ catalystlab/
 
 ---
 
-## Current focus — Settimana 2 (Layer 3 event study)
+## Current focus — Settimana 3 (Layer 4 stats + Layer 5 reporting)
 
-> Settimana 1 chiusa. Riepilogo W1 in `## Settimana 1 — riepilogo (chiusa)` qui sotto.
+> Settimana 2 chiusa. Riepilogo W2 in `## Settimana 2 — riepilogo (chiusa)` qui sotto. W1 in `## Settimana 1 — riepilogo (chiusa)`.
 
-### Obiettivo W2
+### Obiettivo W3
 
-Implementare **Layer 3 — event study engine** sopra il panel parquet prodotto da W1. A fine W2 il framework deve calcolare, per il settore `ai_infra`, le metriche statistiche per ogni (categoria × holding window) come dichiarato in prereg §6.
+Implementare **Layer 4 — statistical validation** + **Layer 5 — reporting** sopra `event_metrics_<sector>.parquet` e `event_summary_<sector>.parquet` prodotti in W2. A fine W3 il framework deve produrre il decision artifact che dichiara Step 1 positivo / negativo / ambiguo per `ai_infra` per prereg §8.
 
-### Deliverable W2
+### Deliverable W3
 
-1. `eventstudy/abnormal_returns.py` — calcolo AR(i, t+k) e CAR(i, [a,b]) per ogni evento, con beta i.e. **β-adjusted AR** sostituendo il proxy `r_i - r_xlk` di W1. Beta stimato su rolling 252gg con esclusione finestra 30gg pre-evento (prereg §6.1).
-2. `eventstudy/aggregation.py` — per (categoria, holding window): mean_CAR, hit_rate, count, std. Risoluzione overlapping events (prereg §12 q.1).
-3. `eventstudy/ic.py` — IC Spearman tra magnitude evento e CAR risultante.
-4. Schema output: `data/processed/event_metrics_<sector>.parquet` con `(category, holding_window, n_events, mean_car, hit_rate, ic, ic_pvalue)`.
-5. CLI subcommand: `catalystlab event-study --sector ai_infra` legge `panel_<sector>.parquet`, produce `event_metrics_<sector>.parquet` + manifest.
-6. Test coverage Layer 3 ≥ **80%** (CLAUDE.md "Tests" — Layer 3-4 non-negoziabili). Property-based test su AR computation (hypothesis).
+1. `stats/bh_correction.py` — Benjamini-Hochberg FDR su 5 test simultanei (5 categorie A-E). Soglia BH-corrected ≈ 0.071 (stimata empiricamente).
+2. `stats/bootstrap.py` — bootstrap CI 95% su IC con 1000 resample (prereg §6.4). Stable across categories with same seed (sector.random_seed).
+3. `stats/temporal_cv.py` — split pre-2025 vs 2025-2026 per detection di decay.
+4. `reporting/html_report.py` — Jinja2 template che combina event_summary + BH + bootstrap CI in un report HTML statico.
+5. `reporting/decision.py` — decisione binaria positivo/negativo/ambiguo per prereg §8.1-§8.3.
+6. CLI subcommand: `catalystlab decide --sector ai_infra` orchestra Layer 4 + Layer 5.
 
-### Task list W2 (in ordine di esecuzione)
+### Task list W3
 
-1. **Curare event logs B/C/D/E** (manuale, ≥10-15 eventi totali per consentire smoke statistical test).
-2. **Beta estimation rolling**: helper in `eventstudy/abnormal_returns.py`, test contro statsmodels OLS.
-3. **AR / CAR per evento**: vectorized su panel parquet.
-4. **Aggregazione per categoria × window**: mean_CAR, hit_rate.
-5. **IC Spearman + p-value uncorrected**: `eventstudy/ic.py`.
-6. **Overlapping events policy**: documentata + test edge case.
-7. **CLI event-study**: subcommand + manifest.
-8. **Hypothesis tests** su AR vectorisation invariants.
-9. **Sanity check end-to-end**: smoke run su panel reale, verifica IC≈0 su categoria con eventi random (null check).
+1. Coverage gap fill: cat D xlk_t1_return aware fix (currently runtime in CLI; consider moving into ingestion pipeline).
+2. BH correction implementation + tests.
+3. Bootstrap CI con stable seed; verifica determinismo.
+4. Temporal CV split test.
+5. Stability check: rimozione iterativa dei top 5 eventi per cat (prereg §6.4).
+6. HTML report template + decision.json artifact.
+7. CLI `decide` subcommand.
+8. Test coverage Layer 4 ≥ 80% (CLAUDE.md "Tests" — Layer 3-4 non-negoziabili).
+9. Final smoke run su panel reale → decision.json.
 
-### Definition of Done — Settimana 2
+### Definition of Done — Settimana 3
 
-- [ ] `uv run python -m catalystlab.cli event-study --sector ai_infra` produce `data/processed/event_metrics_ai_infra.parquet`
-- [ ] Test coverage Layer 3 ≥ 80%
-- [ ] AR/CAR computation ha invariant tests (hypothesis) + sanity check sui dati reali
-- [ ] CLAUDE.md "Current focus" aggiornata per Settimana 3 (Layer 4 + Layer 5)
+- [ ] `uv run python -m catalystlab.cli decide --sector ai_infra` produce `data/processed/decision_ai_infra.json` + `report_ai_infra.html`
+- [ ] BH-corrected p-values per ogni (cat, holding_window) calcolati in Layer 4
+- [ ] Bootstrap CI 95% riportato per ogni IC; deterministic con seed
+- [ ] Decision: positivo/negativo/ambiguo per prereg §8 binding
+- [ ] Test coverage Layer 4 ≥ 80%
+- [ ] CLAUDE.md "Current focus" aggiornata per Settimana 4 (paper trading prep o closure)
+
+---
+
+## Settimana 2 — riepilogo (chiusa)
+
+Layer 3 (event study) completo. Pipeline `build-panel → event-study` end-to-end verde su dati reali.
+
+| # | Task | Deliverable |
+|---|---|---|
+| 1 | Curate event logs B/C/D/E | 15 eventi pubblici curati con audit trail |
+| 2 | Beta estimation rolling | `eventstudy/abnormal_returns.py::estimate_beta` per-evento, finestra 252gg con esclusione 30gg |
+| 3 | AR / CAR vectorized | `compute_ar_car` + `compute_event_metrics`, schema long `[ticker, event_date, event_type, event_magnitude, holding_window, beta, n_obs, car]` |
+| 4 | Aggregation per cat × window | `eventstudy/aggregation.py::aggregate_event_metrics`, mean_car_gross/net, hit_rate, std, costo round-trip 95.5 bps |
+| 5 | IC Spearman + p-value | `eventstudy/ic.py::compute_ic`, scipy spearmanr, BH applicato in W3 |
+| 6 | Overlapping events policy | `enumerate_all_events` bypassa il dedup di `build_panel`, `events_override` parameter in compute_event_metrics |
+| 7 | CLI event-study | `catalystlab event-study --sector ai_infra` → `event_metrics_<sector>.parquet` + `event_summary_<sector>.parquet` + manifest |
+| 8 | Hypothesis property tests | scale invariance, IC monotone-transform, hit_rate ∈ [0,1], cost additivity (~10 hypothesis tests cumulativi) |
+| 9 | Sanity check end-to-end | `tests/test_e2e_sanity.py` null-event IC < 0.2 su panel reale |
+
+**Smoke run W2 (235 eventi su panel 2023-2026)**:
+
+| Cat | Window | n_valid | IC | p-value | hit_rate | mean_car_net (bps) |
+|---|---|---|---|---|---|---|
+| A | 60 | 65 | 0.319 | 0.010 | 62.5% | +573 |
+| D | 1 | 37 | -0.428 | 0.008 | 30% | -14 |
+| D | 5 | 37 | 0.339 | 0.040 | 51% | +243 |
+| D | 20 | 37 | -0.338 | 0.041 | 38% | -23 |
+| D | 60 | 37 | -0.356 | 0.031 | 54% | +1230 |
+
+**Una sola combinazione passa la soglia uncorrected (cat A, T+60)**: IC=0.319 p=0.010 hit_rate=62.5%. **NON è il run Step 1**: la BH correction su 5 test (W3) è ancora da applicare. Inoltre eventi B/C/E con n=2-4 sono underpowered.
+
+**Issues note (per W3)**:
+
+- Cat D mostra IC negativi consistenti su 3/4 windows → mean-reversion pattern? Worth investigating in W3 via bootstrap CI
+- earnings.csv auto-overwritten da build-panel conflitta con il committed state header-only → architectural cleanup deferito
+- IC di cat B/C/E ha p-value NaN per n<5 → smoke statistical inadequato, serve curation più estesa per Step 1 vero (probabilmente >30 eventi per cat per BH significance)
+- `_fill_d_magnitudes` runtime nel CLI funziona ma potrebbe spostarsi in `enumerate_all_events` (cleaner design)
 
 ---
 
@@ -336,12 +375,12 @@ Esempio già presente: `0001-hybrid-not-greenfield.md`.
 | Repo init | ✅ W1 T1 (`5a76da1`) |
 | Layer 1 (config) | ✅ W1 T3-T4 |
 | Layer 2 (ingestion) | ✅ W1 T5-T9 (panel parquet end-to-end) |
-| Layer 3 (event study) | ⏳ Settimana 2 (in corso) |
-| Layer 4 (stats) | 🔒 Settimana 3 |
-| Layer 5 (reporting) | 🔒 Settimana 3 |
+| Layer 3 (event study) | ✅ W2 T2-T9 (event metrics + summary parquet end-to-end) |
+| Layer 4 (stats) | ⏳ Settimana 3 (in corso) |
+| Layer 5 (reporting) | ⏳ Settimana 3 |
 | Step 1 run completo | 🔒 fine Settimana 3 |
 | Decision (positivo/negativo/ambiguo) | 🔒 inizio Settimana 4 |
 
 ---
 
-*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 1*
+*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 2*
