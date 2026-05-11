@@ -1,1 +1,1 @@
-trade_id,ticker,event_date,sue,sue_sign,entry_date,entry_price,exit_date,exit_price,gross_return,cost_bps,net_return,status,notes
+trade_id,ticker,event_date,sue,sue_sign,status,entry_date,entry_price,exit_date,exit_price,gross_return,cost_bps,net_return,notes

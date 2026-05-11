@@ -1,83 +1,139 @@
-# Paper trading — W5 operational shakedown
+# Paper trading — W5 operational shakedown (L2 semi-auto)
 
-Per ADR 0003 §"Decision" and prereg §8.1, the POSITIVE Step 1 v1
-verdict on A T+60 (PEAD) triggers a 1-month paper trading phase
-**before** any live capital deployment. ADR 0004 documents the data
-quality caveat and the decision to proceed.
+Per ADR 0003 / prereg §8.1, il verdict POSITIVE su cat A T+60 triggera 1 mese
+di paper trading PRIMA del live trading. Per ADR 0004 ogni candidate trade
+richiede verifica manuale IR (~20% sign-flip rate su yfinance).
 
-## Scope
+## Workflow operativo (3 step ricorsivo)
 
-- **Winning combination**: cat A (earnings), holding window T+60
-- **Trigger**: company earnings announcement with |SUE| > 1.0 (prereg §3.1)
-  - SUE = (actual - consensus) / std(consensus, last 8 quarters)
-  - **Caveat**: SUE is computed from yfinance EPS data which has
-    ~20% sign-flip rate (ADR 0004). Manual verification of each
-    candidate trade against the company IR press release is recommended.
-- **Entry**: T+1 (next US trading day open) — prereg §4 forbids T+0
-- **Exit**: T+60 (60 trading days later, close)
-- **Position size**: €1000 nominal (paper, no real capital)
-- **Universe**: VRT, ETN, GEV, PWR, CEG, VST, ANET, MOD
-- **Duration**: 1 month (2026-05-11 → 2026-06-10 approx)
+### Step 1 — paper-tick: detect + transition (CLI auto)
 
-## Schema `A_T+60_2026-05.csv`
+Una volta al giorno (o quando vuoi):
+
+```bash
+uv run python -m catalystlab.cli paper-tick --sector ai_infra
+```
+
+Cosa fa il CLI:
+
+1. **Detect**: fetch_earnings sull'universe, identifica nuovi eventi con
+   `|SUE| > 1.0` annunciati negli ultimi 7 giorni (default lookback).
+2. **Append**: aggiunge righe con `status=pending_review` al CSV.
+3. **Transition approved → in_flight**: per ogni riga `status=approved`,
+   se oggi >= T+1 → fetch yfinance adj_close, registra entry, `status=in_flight`.
+4. **Transition in_flight → closed**: per ogni riga `status=in_flight`,
+   se oggi >= T+60 → fetch exit_price, computa gross/net return,
+   `status=closed`.
+5. **Print** summary: nuovi candidati, transizioni, P&L cumulativo netto.
+
+**Opzioni**:
+- `--csv path/to/file.csv` (default: `paper_trading/A_T+60_<YYYY-MM>.csv`)
+- `--sue-threshold 1.0` (prereg §3.1 standard)
+- `--min-event-date 2026-05-11` (default: today−7gg)
+
+### Step 2 — Human IR verification (manuale, 2 min/evento)
+
+Per ogni `pending_review` row, il CLI stampa:
+
+```
+ACTION: review pending_review row(s) — verify IR press release,
+edit CSV: status pending_review -> approved (or rejected).
+```
+
+Workflow di verifica:
+
+1. Apri il CSV in un editor (es. `vim paper_trading/A_T+60_2026-05.csv`)
+2. Per la riga `pending_review`: trova la URL IR press release del ticker
+   (es. investors.constellationenergy.com per CEG)
+3. Verifica:
+   - `actual_eps` (yfinance) corrisponde ad `adjusted EPS` (IR release)?
+   - Sign della surprise (beat/miss) concorda con IR?
+4. Modifica:
+   - Se ✅ concordano → `status=approved`
+   - Se ❌ yfinance ha sign-flip → `status=rejected`, nota in `notes`
+   - Se yfinance ha magnitude sbagliata ma sign corretto → puoi `approved`
+     con nota o `rejected` (ADR 0004 caveat)
+
+Salva il CSV.
+
+### Step 3 — Next paper-tick raccoglie le tue approvazioni
+
+Il prossimo `paper-tick` vedrà le righe `approved`, e se oggi >= T+1
+le porterà a `in_flight` con entry_price.
+
+## Schema CSV `A_T+60_<YYYY-MM>.csv`
 
 | Column | Type | Description |
 |---|---|---|
-| trade_id | int | sequential id |
-| ticker | str | universe ticker |
-| event_date | YYYY-MM-DD | earnings announcement date |
-| sue | float | computed SUE; sign indicates beat (+) / miss (-) |
-| sue_sign | int {-1, 0, +1} | sign of SUE, used for entry direction |
-| entry_date | YYYY-MM-DD | next trading day after event_date |
-| entry_price | float | adjusted close at entry_date |
-| exit_date | YYYY-MM-DD | event_date + 60 trading days |
-| exit_price | float | adjusted close at exit_date |
-| gross_return | float | (exit_price - entry_price) / entry_price * sue_sign |
-| cost_bps | float | applied round-trip cost in bps (95.5 default) |
-| net_return | float | gross_return - cost_bps / 10000 |
-| status | str | one of: pending, in_flight, closed, aborted |
-| notes | str | manual notes (IR EPS verification, data anomalies, etc.) |
+| trade_id | int | sequential id (auto) |
+| ticker | str | universe ticker (auto) |
+| event_date | YYYY-MM-DD | earnings announcement date (auto) |
+| sue | float | SUE = (actual−estimate)/std(estimate); auto from fetch_earnings |
+| sue_sign | int {-1, 0, +1} | sign of SUE; entry direction (LONG if +, SHORT if −) |
+| status | str | pending_review → approved/rejected → in_flight → closed |
+| entry_date | YYYY-MM-DD | T+1 trading day (auto when in_flight) |
+| entry_price | float | yfinance adj_close on entry_date (auto) |
+| exit_date | YYYY-MM-DD | T+60 trading day (auto when closed) |
+| exit_price | float | yfinance adj_close on exit_date (auto) |
+| gross_return | float | (exit−entry)/entry × sue_sign (auto when closed) |
+| cost_bps | float | applied cost in bps (auto, default 95.5) |
+| net_return | float | gross_return − cost_bps/10000 (auto) |
+| notes | str | manual annotations (IR mismatch, data anomalies) |
 
-## Workflow operativo settimanale
+## State machine
 
-1. **Mon morning**: check the next 7 days of earnings for universe via
-   `uv run python -c "..."` snippet or yfinance get_earnings_dates.
-2. **Day-of-earnings**: post-market, compute SUE manually (or run
-   `fetch_earnings` then verify the row against IR press release).
-3. **If |SUE| > 1.0 AND IR press release confirms direction**:
-   add a new row, status=`pending`, entry_date = next trading day.
-4. **T+1 open**: record entry_price (yfinance adj_close T+1, or
-   Fineco quote if available), status=`in_flight`.
-5. **T+60 close**: record exit_price, compute gross_return, net_return,
-   status=`closed`.
-6. **End of month**: tally net P&L, count of trades, average net return,
-   verify cost realism vs prereg §5 (target ~95.5 bps round-trip).
+```
+                 paper-tick auto       human review       paper-tick auto       paper-tick auto
+                ↓                     ↓                  ↓                     ↓
+NEW EVENT  →  pending_review   →   approved        →   in_flight         →   closed
+detected                          (or rejected      (T+1, entry price)     (T+60, exit price,
+                                  → no trade)                                gross + net P&L)
+```
 
-## Manual checks per row
+## Decision criteria (fine W5)
 
-Per ADR 0004, every candidate trade is **manually verified against the
-company IR press release**:
+- **Paper OK**: ≥1 trade `closed` con pipeline operativa OK. Cost realism
+  entro 75-100 bps prereg §5.2.
+- **Paper KO**: timing issues, broker UI gaps, data errors → reject live.
 
-- `actual_eps` matches the adjusted/operating EPS in the IR release
-- `estimate_eps` matches the consensus (IBES/Refinitiv) reported by
-  the company or in analyst preview articles
-- If yfinance and IR disagree on EPS magnitude or sign → use IR values
-  for the trade decision; flag the row with `note: yfinance-IR mismatch`
+L'outcome W5 è **operational only**. Lo statistical Step 1 v1 verdict resta
+binding; il v2 re-source happens W6-W7 (ADR 0004 Track 2).
 
-## Decision criteria (end of W5)
+## Daily routine (raccomandato)
 
-- **Paper OK**: at least 1 trade fully closed (entry + exit) with the
-  operational pipeline working. Cost realism within 75-100 bps per
-  prereg §5.2.
-- **Paper KO**: pipeline failures (timing issues, broker UI gaps,
-  data issues) → reject Step 2b live trading, re-evaluate.
+Lunedì mattina:
 
-The W5 outcome is operational only. The statistical Step 1 v1 verdict
-stands; the v2 re-source happens in W6-W7 (ADR 0004 Track 2).
+```bash
+# 1. Pull aggiornamenti repo (se collaborativo)
+# 2. Run paper-tick
+uv run python -m catalystlab.cli paper-tick --sector ai_infra
+
+# 3. Se "new candidates" > 0:
+#    - Apri CSV
+#    - Per ogni pending_review, verifica IR + approve/reject
+#    - Salva CSV
+#    - (opzionale) Re-run paper-tick per processare approved subito
+
+# 4. Commit changes
+git add paper_trading/
+git commit -m "paper: update W5 trades"
+```
 
 ## Helper commands
 
 ```bash
+# Check P&L summary (Python one-liner)
+uv run python -c "
+import pandas as pd
+df = pd.read_csv('paper_trading/A_T+60_2026-05.csv')
+print(df.groupby('status').size())
+closed = df[df['status']=='closed']
+if not closed.empty:
+    print(f'Net P&L: {closed[\"net_return\"].sum():+.4f}')
+    print(f'Mean: {closed[\"net_return\"].mean():+.4f}')
+    print(f'Trades: {len(closed)}')
+"
+
 # Check upcoming earnings in universe (next 14 days)
 uv run python -c "
 import yfinance as yf, pandas as pd
@@ -86,27 +142,9 @@ today = pd.Timestamp.today().normalize()
 for t in universe:
     df = yf.Ticker(t).get_earnings_dates(limit=8)
     if df is not None and not df.empty:
-        upcoming = df.index[(df.index.tz_localize(None) >= today)
-                            & (df.index.tz_localize(None) <= today + pd.Timedelta(days=14))]
+        idx_naive = df.index.tz_localize(None) if df.index.tz else df.index
+        upcoming = df.index[(idx_naive >= today) & (idx_naive <= today + pd.Timedelta(days=14))]
         if len(upcoming):
-            print(t, list(upcoming.strftime('%Y-%m-%d')))
-"
-
-# Append a new paper trade row (interactive)
-# - Edit paper_trading/A_T+60_2026-05.csv directly in a text editor
-# - Or use pandas:
-uv run python -c "
-import pandas as pd
-df = pd.read_csv('paper_trading/A_T+60_2026-05.csv')
-new = pd.DataFrame([{
-    'trade_id': len(df)+1,
-    'ticker': 'TICKER', 'event_date': 'YYYY-MM-DD',
-    'sue': 0.0, 'sue_sign': 0,
-    'entry_date': '', 'entry_price': float('nan'),
-    'exit_date': '', 'exit_price': float('nan'),
-    'gross_return': float('nan'), 'cost_bps': 95.5, 'net_return': float('nan'),
-    'status': 'pending', 'notes': '',
-}])
-pd.concat([df, new], ignore_index=True).to_csv('paper_trading/A_T+60_2026-05.csv', index=False)
+            print(t, [d.strftime('%Y-%m-%d') for d in upcoming])
 "
 ```

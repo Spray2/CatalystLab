@@ -35,6 +35,7 @@ from catalystlab.ingestion.prices import (
     expected_trading_days,
     fetch_prices,
 )
+from catalystlab.paper_trading import paper_tick
 from catalystlab.reporting.decision import annotate_decision_flags, decide
 from catalystlab.reporting.html_report import render_report
 from catalystlab.stats.bh_correction import apply_bh_per_holding_window
@@ -416,6 +417,51 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_paper_tick(args: argparse.Namespace) -> int:
+    import pandas as pd
+    repo_root = Path.cwd()
+    sectors_dir = repo_root / "sectors"
+    earnings_cache = repo_root / "data" / "raw" / "earnings"
+
+    logger.info("loading sector config: %s", args.sector)
+    sector_cfg, _sector_sha = load_sector(args.sector, sectors_dir=sectors_dir)
+
+    if args.csv is None:
+        # Default: paper_trading/A_T+60_<YYYY-MM>.csv based on today
+        month_tag = datetime.now(UTC).strftime("%Y-%m")
+        csv_path = repo_root / "paper_trading" / f"A_T+60_{month_tag}.csv"
+    else:
+        csv_path = Path(args.csv)
+
+    logger.info("paper-tick on %s (threshold |SUE|>%.2f)", csv_path, args.sue_threshold)
+
+    min_event_date = (
+        pd.Timestamp(args.min_event_date) if args.min_event_date else None
+    )
+    summary = paper_tick(
+        sector_cfg,
+        csv_path,
+        sue_threshold=args.sue_threshold,
+        earnings_cache_dir=earnings_cache,
+        min_event_date=min_event_date,
+    )
+
+    sys.stdout.write(f"csv:                {csv_path}\n")
+    sys.stdout.write(f"new candidates:     {summary['new_candidates']}\n")
+    sys.stdout.write(f"-> in_flight:       {summary['transitioned_in_flight']}\n")
+    sys.stdout.write(f"-> closed:          {summary['transitioned_closed']}\n")
+    sys.stdout.write("by status:\n")
+    for status, count in sorted(summary["by_status"].items()):
+        sys.stdout.write(f"  {status:<18} {count}\n")
+    sys.stdout.write(f"cumulative net P&L: {summary['cumulative_net_return']:+.4f}\n")
+    if summary["new_candidates"] > 0:
+        sys.stdout.write(
+            "\nACTION: review pending_review row(s) — verify IR press release, "
+            "edit CSV: status pending_review -> approved (or rejected).\n"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="catalystlab",
@@ -447,6 +493,13 @@ def main(argv: list[str] | None = None) -> int:
     de = sub.add_parser("decide", help="apply Layer 4 stats + emit decision artifact + HTML report")
     de.add_argument("--sector", required=True, help="sector name (matches sectors/<name>.yaml)")
     de.set_defaults(func=cmd_decide)
+
+    pt = sub.add_parser("paper-tick", help="paper trading: detect new candidates + transition state")
+    pt.add_argument("--sector", required=True, help="sector name (matches sectors/<name>.yaml)")
+    pt.add_argument("--csv", default=None, help="paper trading CSV path (default: paper_trading/A_T+60_<YYYY-MM>.csv)")
+    pt.add_argument("--sue-threshold", type=float, default=1.0, help="|SUE| threshold for new candidate detection")
+    pt.add_argument("--min-event-date", default=None, help="only consider events from this date (YYYY-MM-DD); default: today minus 7 days")
+    pt.set_defaults(func=cmd_paper_tick)
 
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
