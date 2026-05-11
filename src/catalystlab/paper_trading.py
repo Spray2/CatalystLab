@@ -338,3 +338,204 @@ def paper_tick(
         by_status={str(k): int(v) for k, v in by_status.items()},
         cumulative_net_return=cumulative,
     )
+
+
+# ---------- W5 UX helpers: drawdown + sizing + today actions ----------
+
+
+# Prereg §10.2-10.4 thresholds.
+DRAWDOWN_REVIEW_THRESHOLD: float = -0.30
+DRAWDOWN_HARD_STOP_THRESHOLD: float = -0.50
+
+
+def compute_drawdown_status(rows: pd.DataFrame, cap_eur: float) -> dict:
+    """Drawdown status against prereg §10 cap.
+
+    Args:
+        rows: paper-trade DataFrame (`PAPER_TRADE_COLUMNS`).
+        cap_eur: binding capital cap (prereg §10.1 = €5000 for AI Infra
+            live). For paper trading set this to the notional cap that
+            the W5 ledger simulates.
+
+    Returns:
+        Dict with:
+            - current_pnl_pct: realised cumulative net return on closed
+              trades, as a fraction of cap_eur
+            - peak_pnl_pct: running peak of current_pnl_pct over the
+              sequence of closed trades (monotone non-decreasing)
+            - drawdown_pct: current - peak (≤ 0)
+            - trigger_level: "safe" | "review" | "hard_stop"
+
+    The "trigger_level" follows prereg §10.2-10.4:
+        - safe: drawdown_pct > -0.30
+        - review: -0.50 < drawdown_pct ≤ -0.30
+        - hard_stop: drawdown_pct ≤ -0.50
+    """
+    closed = (
+        rows[rows["status"] == "closed"].copy()
+        if not rows.empty and "status" in rows.columns
+        else pd.DataFrame()
+    )
+    if closed.empty or cap_eur <= 0:
+        return {
+            "current_pnl_pct": 0.0,
+            "peak_pnl_pct": 0.0,
+            "drawdown_pct": 0.0,
+            "trigger_level": "safe",
+        }
+
+    closed = closed.sort_values("exit_date")
+    # Each trade's net_return is on a €1000 notional position by convention
+    # in the paper ledger. Translate to cap fraction: position_eur / cap_eur.
+    position_eur = 1000.0
+    weight = position_eur / cap_eur
+    cumulative = closed["net_return"].fillna(0.0).cumsum() * weight
+    peak = cumulative.cummax()
+
+    current_pnl = float(cumulative.iloc[-1])
+    peak_pnl = float(peak.iloc[-1])
+    # Drawdown per prereg §10.2: vs starting capital (€5k → €3.5k = -30%),
+    # NOT peak-to-trough. The trigger is on the cumulative net P&L
+    # against the starting cap, expressed as a fraction. Peak is kept as
+    # an informational field.
+    drawdown = current_pnl
+
+    if drawdown <= DRAWDOWN_HARD_STOP_THRESHOLD:
+        trigger = "hard_stop"
+    elif drawdown <= DRAWDOWN_REVIEW_THRESHOLD:
+        trigger = "review"
+    else:
+        trigger = "safe"
+
+    return {
+        "current_pnl_pct": current_pnl,
+        "peak_pnl_pct": peak_pnl,
+        "drawdown_pct": drawdown,
+        "trigger_level": trigger,
+    }
+
+
+def compute_sizing(
+    rows: pd.DataFrame,
+    cap_eur: float,
+    max_per_trade_eur: float = 1000.0,
+) -> dict:
+    """Capital deployment + slot summary.
+
+    Args:
+        rows: paper-trade DataFrame.
+        cap_eur: binding capital cap.
+        max_per_trade_eur: max position size per trade (prereg §8.1 = 20%
+            of cap = €1000 for €5k cap).
+
+    Returns:
+        Dict with:
+            - cap_deployed_eur: max_per_trade_eur * count(in_flight)
+            - cap_available_eur: cap_eur - cap_deployed_eur (≥ 0)
+            - slots_open: count(in_flight)
+            - slots_max: floor(cap_eur / max_per_trade_eur)
+            - recommended_position_eur: min(max_per_trade_eur,
+                cap_available_eur) — clamped to 0 when no slots.
+    """
+    if cap_eur <= 0 or max_per_trade_eur <= 0:
+        raise ValueError("cap_eur and max_per_trade_eur must be > 0")
+
+    slots_max = int(cap_eur // max_per_trade_eur)
+
+    if rows.empty or "status" not in rows.columns:
+        slots_open = 0
+    else:
+        slots_open = int((rows["status"] == "in_flight").sum())
+
+    cap_deployed = float(slots_open * max_per_trade_eur)
+    cap_available = max(0.0, cap_eur - cap_deployed)
+    recommended = min(max_per_trade_eur, cap_available) if slots_open < slots_max else 0.0
+
+    return {
+        "cap_deployed_eur": cap_deployed,
+        "cap_available_eur": cap_available,
+        "slots_open": slots_open,
+        "slots_max": slots_max,
+        "recommended_position_eur": recommended,
+    }
+
+
+def compute_today_actions(
+    rows: pd.DataFrame,
+    today: pd.Timestamp,
+    holding_window: int = 60,
+) -> dict:
+    """Compute the "today actions" for paper/live execution.
+
+    Args:
+        rows: paper-trade DataFrame.
+        today: today timestamp (normalised to date).
+        holding_window: T+N exit window (cat A T+60 default).
+
+    Returns:
+        Dict with:
+            - open: list of dicts {trade_id, ticker, sue, sue_sign, event_date}
+              for rows in status=approved with T+1 == today.
+            - close: list of dicts {trade_id, ticker, entry_date,
+              entry_price, days_held} for rows in status=in_flight with
+              T+60 == today.
+
+    The intent: a human reads this list and places the corresponding
+    manual orders on the broker (Fineco app).
+    """
+    today_ts = pd.Timestamp(today).normalize()
+    open_actions: list[dict] = []
+    close_actions: list[dict] = []
+
+    if rows is None or rows.empty:
+        return {"open": [], "close": []}
+
+    for _, row in rows.iterrows():
+        if pd.isna(row.get("event_date")):
+            continue
+        ev = pd.Timestamp(row["event_date"])
+        status = row.get("status", "")
+
+        if status == "approved":
+            try:
+                t1 = _next_trading_day(ev, n=1)
+            except ValueError:
+                continue
+            if t1.normalize() == today_ts:
+                open_actions.append(
+                    {
+                        "trade_id": int(row["trade_id"]),
+                        "ticker": str(row["ticker"]),
+                        "event_date": str(ev.date()),
+                        "sue": float(row.get("sue", float("nan"))),
+                        "sue_sign": int(row.get("sue_sign", 0)),
+                    }
+                )
+
+        elif status == "in_flight":
+            try:
+                t60 = _next_trading_day(ev, n=holding_window)
+            except ValueError:
+                continue
+            if t60.normalize() == today_ts:
+                entry_date_raw = row.get("entry_date", "")
+                if entry_date_raw and not pd.isna(entry_date_raw):
+                    entry_ts = pd.Timestamp(entry_date_raw)
+                    days_held = (today_ts - entry_ts).days
+                else:
+                    days_held = -1
+                close_actions.append(
+                    {
+                        "trade_id": int(row["trade_id"]),
+                        "ticker": str(row["ticker"]),
+                        "entry_date": str(entry_date_raw) if entry_date_raw else "",
+                        "entry_price": (
+                            float(row["entry_price"])
+                            if pd.notna(row.get("entry_price"))
+                            else float("nan")
+                        ),
+                        "days_held": days_held,
+                    }
+                )
+
+    return {"open": open_actions, "close": close_actions}

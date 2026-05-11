@@ -35,7 +35,14 @@ from catalystlab.ingestion.prices import (
     expected_trading_days,
     fetch_prices,
 )
-from catalystlab.paper_trading import paper_tick
+from catalystlab.paper_trading import (
+    compute_drawdown_status,
+    compute_sizing,
+    compute_today_actions,
+    load_paper_csv,
+    paper_tick,
+)
+from catalystlab.reporting.dashboard import render_dashboard
 from catalystlab.reporting.decision import annotate_decision_flags, decide
 from catalystlab.reporting.html_report import render_report
 from catalystlab.stats.bh_correction import apply_bh_per_holding_window
@@ -417,8 +424,182 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def _default_paper_csv_path(repo_root: Path, sector: str) -> Path:
+    del sector  # path doesn't depend on sector currently; reserved arg
+    month_tag = datetime.now(UTC).strftime("%Y-%m")
+    return repo_root / "paper_trading" / f"A_T+60_{month_tag}.csv"
+
+
+def _upcoming_earnings(
+    sector_cfg, today: pd.Timestamp, horizon_days: int = 14
+) -> list[dict]:
+    """Return upcoming earnings in the next horizon_days for the universe.
+
+    Tolerates yfinance failures (network/scrape rate limit) and returns
+    whatever was retrievable.
+    """
+    out: list[dict] = []
+    try:
+        import yfinance as yf
+    except ImportError:
+        return out
+    horizon = today + pd.Timedelta(days=horizon_days)
+    for t in sector_cfg.universe:
+        ticker = t.ticker
+        try:
+            df = yf.Ticker(ticker).get_earnings_dates(limit=8)
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        idx_naive = df.index.tz_localize(None) if df.index.tz is not None else df.index
+        mask = (idx_naive >= today) & (idx_naive <= horizon)
+        for ev_date, row in df[mask].iterrows():
+            est = row.get("EPS Estimate", None)
+            out.append(
+                {
+                    "ticker": ticker,
+                    "date": pd.Timestamp(ev_date).date().isoformat(),
+                    "estimate_eps": float(est) if pd.notna(est) else None,
+                }
+            )
+    out.sort(key=lambda d: d["date"])
+    return out
+
+
+def _emit_dashboard(
+    sector_cfg,
+    csv_path: Path,
+    out_path: Path,
+    today: pd.Timestamp,
+    cap_eur: float = 5000.0,
+    max_per_trade_eur: float = 1000.0,
+) -> None:
+    """Render dashboard.html from paper-trading CSV + sector config."""
+    rows = load_paper_csv(csv_path)
+    drawdown = compute_drawdown_status(rows, cap_eur=cap_eur)
+    sizing = compute_sizing(rows, cap_eur=cap_eur, max_per_trade_eur=max_per_trade_eur)
+    today_actions = compute_today_actions(rows, today=today)
+    upcoming = _upcoming_earnings(sector_cfg, today=today)
+
+    html = render_dashboard(
+        sector=sector_cfg.sector,
+        display_name=sector_cfg.display_name,
+        combination="A T+60 (PEAD)",
+        cap_eur=cap_eur,
+        max_per_trade_eur=max_per_trade_eur,
+        timestamp_utc=datetime.now(UTC).isoformat(),
+        today=today,
+        rows=rows,
+        drawdown=drawdown,
+        sizing=sizing,
+        today_actions=today_actions,
+        upcoming_earnings=upcoming,
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
+
+
+def cmd_today(args: argparse.Namespace) -> int:
+    """Print today's actions (open/close) + status snapshot."""
+    repo_root = Path.cwd()
+    sectors_dir = repo_root / "sectors"
+
+    sector_cfg, _ = load_sector(args.sector, sectors_dir=sectors_dir)
+    csv_path = (
+        Path(args.csv)
+        if args.csv
+        else _default_paper_csv_path(repo_root, args.sector)
+    )
+    if not csv_path.is_file():
+        sys.stdout.write(f"Paper trading CSV not found: {csv_path}\n")
+        sys.stdout.write("Run `catalystlab paper-tick` first.\n")
+        return 2
+
+    today_ts = (
+        pd.Timestamp(args.today) if args.today else pd.Timestamp.today().normalize()
+    )
+    cap_eur = args.cap_eur
+    max_per_trade_eur = args.max_per_trade_eur
+
+    rows = load_paper_csv(csv_path)
+    drawdown = compute_drawdown_status(rows, cap_eur=cap_eur)
+    sizing = compute_sizing(rows, cap_eur=cap_eur, max_per_trade_eur=max_per_trade_eur)
+    today_actions = compute_today_actions(rows, today=today_ts)
+
+    n_open_actions = len(today_actions["open"]) + len(today_actions["close"])
+    in_flight_count = (
+        int((rows["status"] == "in_flight").sum()) if not rows.empty else 0
+    )
+
+    sys.stdout.write(f"Date: {today_ts.date()}\n")
+    sys.stdout.write(
+        f"Cap deployed: EUR{sizing['cap_deployed_eur']:.0f} / EUR{cap_eur:.0f} "
+        f"({sizing['cap_deployed_eur']/cap_eur*100:.0f}%)  |  "
+        f"Slots: {sizing['slots_open']} / {sizing['slots_max']} open\n"
+    )
+    sys.stdout.write(
+        f"Drawdown: {drawdown['drawdown_pct']*100:+.2f}% ({drawdown['trigger_level']})"
+        f"  -- review at -30%, hard stop -50%\n\n"
+    )
+
+    sys.stdout.write(f"TODAY ACTIONS ({n_open_actions})\n")
+    if n_open_actions == 0:
+        sys.stdout.write("  (none)\n")
+    else:
+        for o in today_actions["open"]:
+            direction = (
+                "long" if o["sue_sign"] > 0
+                else "short" if o["sue_sign"] < 0
+                else "flat"
+            )
+            sys.stdout.write(
+                f"  OPEN  {o['ticker']:<5} {direction:<5} "
+                f"EUR{sizing['recommended_position_eur']:.0f}  "
+                f"(SUE={o['sue']:+.2f} from {o['event_date']} earnings)\n"
+            )
+        for c in today_actions["close"]:
+            price_s = (
+                f"${c['entry_price']:.2f}"
+                if c["entry_price"] == c["entry_price"]
+                else "--"
+            )
+            sys.stdout.write(
+                f"  CLOSE {c['ticker']:<5} exit  -- (entered {c['entry_date']} @ "
+                f"{price_s}, T+60 exit today)\n"
+            )
+    sys.stdout.write("\n")
+
+    sys.stdout.write(f"OPEN POSITIONS ({in_flight_count})\n")
+    if in_flight_count == 0:
+        sys.stdout.write("  (none)\n")
+    else:
+        in_flight = rows[rows["status"] == "in_flight"]
+        for _, r in in_flight.iterrows():
+            entry_ts = pd.Timestamp(r["entry_date"]) if r["entry_date"] else None
+            days_held = (today_ts - entry_ts).days if entry_ts is not None else 0
+            direction = (
+                "long" if int(r["sue_sign"]) > 0
+                else "short" if int(r["sue_sign"]) < 0
+                else "flat"
+            )
+            sys.stdout.write(
+                f"  {r['ticker']:<5} {direction:<5}  day {days_held}/60\n"
+            )
+
+    upcoming = _upcoming_earnings(sector_cfg, today=today_ts, horizon_days=14)
+    sys.stdout.write(f"\nUPCOMING EARNINGS (next 14 days) ({len(upcoming)})\n")
+    if not upcoming:
+        sys.stdout.write("  (none)\n")
+    else:
+        for u in upcoming:
+            est = f"est={u['estimate_eps']:.2f}" if u["estimate_eps"] is not None else "est=--"
+            sys.stdout.write(f"  {u['ticker']:<5} {u['date']}  {est}\n")
+
+    return 0
+
+
 def cmd_paper_tick(args: argparse.Namespace) -> int:
-    import pandas as pd
     repo_root = Path.cwd()
     sectors_dir = repo_root / "sectors"
     earnings_cache = repo_root / "data" / "raw" / "earnings"
@@ -459,6 +640,19 @@ def cmd_paper_tick(args: argparse.Namespace) -> int:
             "\nACTION: review pending_review row(s) — verify IR press release, "
             "edit CSV: status pending_review -> approved (or rejected).\n"
         )
+
+    # Emit dashboard.html alongside the paper tick.
+    dashboard_path = repo_root / "data" / "processed" / f"dashboard_{args.sector}.html"
+    today_ts = pd.Timestamp.today().normalize()
+    _emit_dashboard(
+        sector_cfg,
+        csv_path,
+        dashboard_path,
+        today=today_ts,
+        cap_eur=args.cap_eur,
+        max_per_trade_eur=args.max_per_trade_eur,
+    )
+    sys.stdout.write(f"dashboard: {dashboard_path}\n")
     return 0
 
 
@@ -499,7 +693,17 @@ def main(argv: list[str] | None = None) -> int:
     pt.add_argument("--csv", default=None, help="paper trading CSV path (default: paper_trading/A_T+60_<YYYY-MM>.csv)")
     pt.add_argument("--sue-threshold", type=float, default=1.0, help="|SUE| threshold for new candidate detection")
     pt.add_argument("--min-event-date", default=None, help="only consider events from this date (YYYY-MM-DD); default: today minus 7 days")
+    pt.add_argument("--cap-eur", type=float, default=5000.0, help="binding capital cap in EUR (prereg §10.1)")
+    pt.add_argument("--max-per-trade-eur", type=float, default=1000.0, help="max position size per trade in EUR (20%% cap, §8.1)")
     pt.set_defaults(func=cmd_paper_tick)
+
+    td = sub.add_parser("today", help="paper/live: print today's actions + status snapshot")
+    td.add_argument("--sector", required=True, help="sector name (matches sectors/<name>.yaml)")
+    td.add_argument("--csv", default=None, help="paper/live CSV path (default: paper_trading/A_T+60_<YYYY-MM>.csv)")
+    td.add_argument("--today", default=None, help="override today's date (YYYY-MM-DD); default: real today")
+    td.add_argument("--cap-eur", type=float, default=5000.0, help="binding capital cap in EUR")
+    td.add_argument("--max-per-trade-eur", type=float, default=1000.0, help="max position size per trade in EUR")
+    td.set_defaults(func=cmd_today)
 
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)

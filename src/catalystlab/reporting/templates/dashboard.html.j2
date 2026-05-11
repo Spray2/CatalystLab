@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CatalystLab — {{ sector }} paper trading</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: 0.3rem; }
+  h2 { margin-top: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; }
+  .meta { color: #555; font-size: 0.88rem; }
+  .meta div { margin: 0.2rem 0; }
+  .banner { padding: 0.7rem 1rem; border-radius: 6px; font-weight: 600; margin: 1rem 0; }
+  .banner.safe      { background: #e6f4ea; color: #137333; }
+  .banner.review    { background: #fef7e0; color: #ea8600; }
+  .banner.hard_stop { background: #fce8e6; color: #a50e0e; }
+  .gauge-track { background: #eee; border-radius: 4px; height: 12px; width: 100%; overflow: hidden; margin: 0.3rem 0; }
+  .gauge-bar { background: #4a90e2; height: 100%; transition: width 0.3s; }
+  .gauge-bar.review    { background: #f5a623; }
+  .gauge-bar.hard_stop { background: #d0021b; }
+  table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 1.2rem; font-size: 0.92rem; }
+  th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #e0e0e0; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #f5f5f5; }
+  .action-open  { background: #e6f4ea; }
+  .action-close { background: #fce8e6; }
+  .pnl-pos { color: #137333; font-weight: 600; }
+  .pnl-neg { color: #a50e0e; font-weight: 600; }
+  .alert { padding: 0.5rem 0.8rem; border-radius: 4px; margin: 0.3rem 0; font-size: 0.9rem; }
+  .alert.info { background: #e8f0fe; color: #1a73e8; }
+  .alert.warn { background: #fef7e0; color: #ea8600; }
+  .alert.danger { background: #fce8e6; color: #a50e0e; }
+  .disclaimer { font-size: 0.82rem; color: #666; margin-top: 3rem;
+                border-top: 1px solid #ccc; padding-top: 1rem; }
+  code { background: #f0f0f0; padding: 0.05rem 0.3rem; border-radius: 3px; }
+  .kpi { display: inline-block; margin-right: 2rem; font-size: 1rem; }
+  .kpi b { color: #333; }
+</style>
+</head>
+<body>
+
+<h1>CatalystLab — {{ sector }} ({{ display_name }})</h1>
+
+<div class="meta">
+  <div><strong>Generated:</strong> {{ timestamp_utc }}</div>
+  <div><strong>Combination:</strong> {{ combination }} (Step 1 v1 winner per ADR 0003)</div>
+  <div><strong>Cap binding:</strong> €{{ '%.0f' | format(cap_eur) }} (prereg §10.1)</div>
+  <div><strong>Position size:</strong> €{{ '%.0f' | format(max_per_trade_eur) }} max per trade (20% cap, §8.1)</div>
+</div>
+
+<h2>Status snapshot</h2>
+
+<div>
+  <span class="kpi">
+    <b>Cumulative P&L</b>:
+    <span class="{{ 'pnl-pos' if cumulative_net_pct >= 0 else 'pnl-neg' }}">
+      {{ '%+.2f%%' | format(cumulative_net_pct * 100) }}
+      ({{ '%+.0f' | format(cumulative_net_pct * cap_eur) }} EUR)
+    </span>
+  </span>
+  <span class="kpi">
+    <b>Closed</b>: {{ n_closed }} | <b>In flight</b>: {{ n_in_flight }} | <b>Pending</b>: {{ n_pending }}
+  </span>
+</div>
+
+<div class="banner {{ drawdown.trigger_level }}">
+  Drawdown: <strong>{{ '%+.2f%%' | format(drawdown.drawdown_pct * 100) }}</strong> —
+  {% if drawdown.trigger_level == 'safe' %}
+  SAFE (review threshold at -30%, hard stop -50%)
+  {% elif drawdown.trigger_level == 'review' %}
+  ⚠ REVIEW threshold reached — apply prereg §10.3 "tesi rotta" checks
+  {% else %}
+  ❌ HARD STOP triggered — close all positions per prereg §10.4
+  {% endif %}
+</div>
+
+<div class="gauge-track">
+  <div class="gauge-bar {{ drawdown.trigger_level }}" style="width: {{ sizing.cap_deployed_pct }}%"></div>
+</div>
+<div class="meta">
+  Cap deployed: €{{ '%.0f' | format(sizing.cap_deployed_eur) }} / €{{ '%.0f' | format(cap_eur) }}
+  ({{ '%.0f%%' | format(sizing.cap_deployed_pct) }}) ·
+  Slots: {{ sizing.slots_open }} / {{ sizing.slots_max }} ·
+  Recommended next position: €{{ '%.0f' | format(sizing.recommended_position_eur) }}
+</div>
+
+<h2>Today actions ({{ today_actions.open | length + today_actions.close | length }})</h2>
+
+{% if today_actions.open or today_actions.close %}
+<table>
+  <thead>
+    <tr><th>Action</th><th>Ticker</th><th>Direction</th><th>Size €</th><th>Reason</th></tr>
+  </thead>
+  <tbody>
+    {% for o in today_actions.open %}
+    <tr class="action-open">
+      <td>🟢 OPEN</td>
+      <td>{{ o.ticker }}</td>
+      <td>{{ 'long' if o.sue_sign > 0 else 'short' if o.sue_sign < 0 else '—' }}</td>
+      <td>{{ '%.0f' | format(sizing.recommended_position_eur) }}</td>
+      <td>SUE={{ '%+.2f' | format(o.sue) }} from {{ o.event_date }} earnings</td>
+    </tr>
+    {% endfor %}
+    {% for c in today_actions.close %}
+    <tr class="action-close">
+      <td>🔴 CLOSE</td>
+      <td>{{ c.ticker }}</td>
+      <td>exit</td>
+      <td>—</td>
+      <td>entered {{ c.entry_date }} @ ${{ '%.2f' | format(c.entry_price) if c.entry_price == c.entry_price else '—' }}, T+60 today</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="meta">No actions today. Sistema in standby fino al prossimo earnings o exit date.</p>
+{% endif %}
+
+<h2>Open positions ({{ in_flight_rows | length }})</h2>
+
+{% if in_flight_rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Ticker</th><th>Direction</th><th>Entry date</th><th>Entry price</th>
+      <th>Days held</th><th>Days remaining</th><th>SUE</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in in_flight_rows %}
+    <tr>
+      <td>{{ r.ticker }}</td>
+      <td>{{ 'long' if r.sue_sign > 0 else 'short' if r.sue_sign < 0 else '—' }}</td>
+      <td>{{ r.entry_date }}</td>
+      <td>{{ '%.2f' | format(r.entry_price) if r.entry_price is not none else '—' }}</td>
+      <td>{{ r.days_held }}</td>
+      <td>{{ r.days_remaining }}</td>
+      <td>{{ '%+.2f' | format(r.sue) if r.sue is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="meta">Nessuna posizione aperta.</p>
+{% endif %}
+
+<h2>Closed positions ({{ closed_rows | length }})</h2>
+
+{% if closed_rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Ticker</th><th>Entry</th><th>Exit</th>
+      <th>Entry $</th><th>Exit $</th><th>Gross %</th><th>Net %</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in closed_rows %}
+    <tr>
+      <td>{{ r.ticker }}</td>
+      <td>{{ r.entry_date }}</td>
+      <td>{{ r.exit_date }}</td>
+      <td>{{ '%.2f' | format(r.entry_price) if r.entry_price is not none else '—' }}</td>
+      <td>{{ '%.2f' | format(r.exit_price) if r.exit_price is not none else '—' }}</td>
+      <td>{{ '%+.2f%%' | format(r.gross_return * 100) if r.gross_return is not none else '—' }}</td>
+      <td class="{{ 'pnl-pos' if r.net_return is not none and r.net_return >= 0 else 'pnl-neg' }}">
+        {{ '%+.2f%%' | format(r.net_return * 100) if r.net_return is not none else '—' }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="meta">Nessuna posizione chiusa ancora.</p>
+{% endif %}
+
+{% if pending_rows %}
+<h2>Pending review ({{ pending_rows | length }})</h2>
+<p class="alert warn">
+  Verificare ogni riga contro l'IR press release del ticker (ADR 0004 caveat:
+  yfinance EPS ha ~20% sign-flip rate). Modifica `status` nel CSV a
+  <code>approved</code> o <code>rejected</code>.
+</p>
+<table>
+  <thead>
+    <tr><th>Ticker</th><th>Event date</th><th>SUE</th><th>Sign</th></tr>
+  </thead>
+  <tbody>
+    {% for r in pending_rows %}
+    <tr>
+      <td>{{ r.ticker }}</td>
+      <td>{{ r.event_date }}</td>
+      <td>{{ '%+.2f' | format(r.sue) if r.sue is not none else '—' }}</td>
+      <td>{{ 'long' if r.sue_sign > 0 else 'short' if r.sue_sign < 0 else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Upcoming earnings — next 14 days</h2>
+
+{% if upcoming_earnings %}
+<table>
+  <thead>
+    <tr><th>Ticker</th><th>Date</th><th>Est EPS</th></tr>
+  </thead>
+  <tbody>
+    {% for u in upcoming_earnings %}
+    <tr>
+      <td>{{ u.ticker }}</td>
+      <td>{{ u.date }}</td>
+      <td>{{ '%.2f' | format(u.estimate_eps) if u.estimate_eps is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="meta">Nessun earnings nei prossimi 14 giorni per l'universe.</p>
+{% endif %}
+
+<h2>Alerts</h2>
+
+<div class="alert {{ 'danger' if drawdown.trigger_level == 'hard_stop' else 'warn' if drawdown.trigger_level == 'review' else 'info' }}">
+  Drawdown trigger: <strong>{{ drawdown.trigger_level }}</strong>
+  (-30% review, -50% hard stop per prereg §10.2-10.4)
+</div>
+
+{% for alert in extra_alerts %}
+<div class="alert {{ alert.level }}">{{ alert.text }}</div>
+{% endfor %}
+
+<div class="disclaimer">
+  <strong>Disclaimer (prereg §13):</strong>
+  Questo documento è un piano di ricerca personale. Non costituisce
+  consulenza finanziaria, raccomandazione di investimento, o offerta di
+  servizi. L'autore non è un consulente finanziario registrato CONSOB.
+  Le azioni "open/close" indicano cosa il framework suggerisce per
+  paper/live trading PRIVATO; l'esecuzione è sempre manuale.
+</div>
+
+</body>
+</html>

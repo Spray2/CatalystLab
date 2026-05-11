@@ -378,6 +378,237 @@ def test_paper_tick_full_lifecycle(tmp_path: Path) -> None:
     assert df.iloc[0]["gross_return"] == pytest.approx(0.20, abs=1e-9)
 
 
+# ---------- W5 UX helpers: drawdown + sizing + today actions ----------
+
+
+from catalystlab.paper_trading import (  # noqa: E402
+    DRAWDOWN_HARD_STOP_THRESHOLD,
+    DRAWDOWN_REVIEW_THRESHOLD,
+    compute_drawdown_status,
+    compute_sizing,
+    compute_today_actions,
+)
+
+
+def _closed_row(
+    trade_id: int, ticker: str, exit_date: str, net_return: float
+) -> dict:
+    return {
+        "trade_id": trade_id, "ticker": ticker, "event_date": "2024-01-15",
+        "sue": 2.0, "sue_sign": 1, "status": "closed",
+        "entry_date": "2024-01-16", "entry_price": 100.0,
+        "exit_date": exit_date, "exit_price": 100.0 * (1 + net_return + 0.00955),
+        "gross_return": net_return + 0.00955,
+        "cost_bps": 95.5,
+        "net_return": net_return,
+        "notes": "",
+    }
+
+
+def test_drawdown_thresholds_pinned() -> None:
+    assert DRAWDOWN_REVIEW_THRESHOLD == -0.30
+    assert DRAWDOWN_HARD_STOP_THRESHOLD == -0.50
+
+
+def test_drawdown_empty_rows_safe() -> None:
+    out = compute_drawdown_status(
+        pd.DataFrame(columns=PAPER_TRADE_COLUMNS), cap_eur=5000.0
+    )
+    assert out["trigger_level"] == "safe"
+    assert out["drawdown_pct"] == 0.0
+
+
+def test_drawdown_positive_returns_safe() -> None:
+    rows = pd.DataFrame(
+        [
+            _closed_row(1, "VRT", "2024-03-01", 0.10),
+            _closed_row(2, "ANET", "2024-04-01", 0.05),
+        ]
+    )
+    out = compute_drawdown_status(rows, cap_eur=5000.0)
+    # cumulative = (0.10 + 0.05) * 1000/5000 = 0.03 vs cap (prereg §10.2:
+    # trigger vs starting cap, NOT peak-to-trough)
+    assert out["trigger_level"] == "safe"
+    assert out["drawdown_pct"] == pytest.approx(0.03, abs=1e-9)
+    assert out["peak_pnl_pct"] == pytest.approx(0.03, abs=1e-9)
+
+
+def test_drawdown_review_triggered_at_minus_30_pct() -> None:
+    """3 trades of -50% on €1k each = -€1500 on €5k cap = -30% drawdown."""
+    rows = pd.DataFrame(
+        [
+            _closed_row(1, "VRT", "2024-03-01", -0.50),
+            _closed_row(2, "ANET", "2024-04-01", -0.50),
+            _closed_row(3, "MOD", "2024-05-01", -0.50),
+        ]
+    )
+    out = compute_drawdown_status(rows, cap_eur=5000.0)
+    # cumulative = -1.5 * (1000/5000) = -0.30; peak = 0; drawdown = -0.30
+    assert out["drawdown_pct"] == pytest.approx(-0.30, abs=1e-9)
+    assert out["trigger_level"] == "review"
+
+
+def test_drawdown_hard_stop_at_minus_50_pct() -> None:
+    rows = pd.DataFrame(
+        [
+            _closed_row(1, "VRT", "2024-03-01", -0.50),
+            _closed_row(2, "ANET", "2024-04-01", -0.50),
+            _closed_row(3, "MOD", "2024-05-01", -0.50),
+            _closed_row(4, "ETN", "2024-06-01", -0.50),
+            _closed_row(5, "PWR", "2024-07-01", -0.50),
+        ]
+    )
+    out = compute_drawdown_status(rows, cap_eur=5000.0)
+    # cumulative = -2.5 * (1000/5000) = -0.50
+    assert out["drawdown_pct"] == pytest.approx(-0.50, abs=1e-9)
+    assert out["trigger_level"] == "hard_stop"
+
+
+def test_drawdown_invalid_cap_safe() -> None:
+    rows = pd.DataFrame([_closed_row(1, "VRT", "2024-03-01", 0.10)])
+    out = compute_drawdown_status(rows, cap_eur=0.0)
+    assert out["trigger_level"] == "safe"
+
+
+# ---------- compute_sizing ----------
+
+
+def test_sizing_empty_rows() -> None:
+    out = compute_sizing(pd.DataFrame(columns=PAPER_TRADE_COLUMNS), cap_eur=5000.0)
+    assert out["cap_deployed_eur"] == 0.0
+    assert out["cap_available_eur"] == 5000.0
+    assert out["slots_open"] == 0
+    assert out["slots_max"] == 5
+    assert out["recommended_position_eur"] == 1000.0
+
+
+def test_sizing_with_in_flight_positions() -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "trade_id": 1, "ticker": "VRT", "event_date": "2024-01-15",
+                "sue": 2.0, "sue_sign": 1, "status": "in_flight",
+                "entry_date": "2024-01-16", "entry_price": 100.0,
+                "exit_date": "", "exit_price": float("nan"),
+                "gross_return": float("nan"), "cost_bps": float("nan"),
+                "net_return": float("nan"), "notes": "",
+            },
+            {
+                "trade_id": 2, "ticker": "ANET", "event_date": "2024-02-15",
+                "sue": 2.0, "sue_sign": 1, "status": "in_flight",
+                "entry_date": "2024-02-16", "entry_price": 100.0,
+                "exit_date": "", "exit_price": float("nan"),
+                "gross_return": float("nan"), "cost_bps": float("nan"),
+                "net_return": float("nan"), "notes": "",
+            },
+        ]
+    )
+    out = compute_sizing(rows, cap_eur=5000.0, max_per_trade_eur=1000.0)
+    assert out["slots_open"] == 2
+    assert out["slots_max"] == 5
+    assert out["cap_deployed_eur"] == 2000.0
+    assert out["cap_available_eur"] == 3000.0
+    assert out["recommended_position_eur"] == 1000.0
+
+
+def test_sizing_all_slots_filled_recommends_zero() -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "trade_id": i, "ticker": f"T{i}", "event_date": "2024-01-15",
+                "sue": 2.0, "sue_sign": 1, "status": "in_flight",
+                "entry_date": "2024-01-16", "entry_price": 100.0,
+                "exit_date": "", "exit_price": float("nan"),
+                "gross_return": float("nan"), "cost_bps": float("nan"),
+                "net_return": float("nan"), "notes": "",
+            }
+            for i in range(5)
+        ]
+    )
+    out = compute_sizing(rows, cap_eur=5000.0, max_per_trade_eur=1000.0)
+    assert out["slots_open"] == 5
+    assert out["recommended_position_eur"] == 0.0
+
+
+def test_sizing_invalid_cap_raises() -> None:
+    with pytest.raises(ValueError, match="cap_eur"):
+        compute_sizing(pd.DataFrame(columns=PAPER_TRADE_COLUMNS), cap_eur=0.0)
+
+
+# ---------- compute_today_actions ----------
+
+
+def test_today_actions_empty_rows() -> None:
+    out = compute_today_actions(
+        pd.DataFrame(columns=PAPER_TRADE_COLUMNS), today=pd.Timestamp("2024-01-15")
+    )
+    assert out == {"open": [], "close": []}
+
+
+def test_today_actions_open_when_t1_is_today() -> None:
+    """Approved earnings on Mon 2024-01-15 → T+1 = Tue 2024-01-16."""
+    rows = pd.DataFrame(
+        [
+            {
+                "trade_id": 1, "ticker": "VRT", "event_date": "2024-01-15",
+                "sue": 2.0, "sue_sign": 1, "status": "approved",
+                "entry_date": "", "entry_price": float("nan"),
+                "exit_date": "", "exit_price": float("nan"),
+                "gross_return": float("nan"), "cost_bps": float("nan"),
+                "net_return": float("nan"), "notes": "",
+            }
+        ]
+    )
+    out = compute_today_actions(rows, today=pd.Timestamp("2024-01-16"))
+    assert len(out["open"]) == 1
+    assert out["open"][0]["ticker"] == "VRT"
+    assert out["open"][0]["sue_sign"] == 1
+    assert out["close"] == []
+
+
+def test_today_actions_close_when_t60_is_today() -> None:
+    """Event 2024-01-15, in_flight, today must be exactly T+60 trading days later."""
+    # First compute the actual T+60 date from the function.
+    from catalystlab.paper_trading import _next_trading_day
+    t60 = _next_trading_day(pd.Timestamp("2024-01-15"), n=60)
+    rows = pd.DataFrame(
+        [
+            {
+                "trade_id": 1, "ticker": "VRT", "event_date": "2024-01-15",
+                "sue": 2.0, "sue_sign": 1, "status": "in_flight",
+                "entry_date": "2024-01-16", "entry_price": 100.0,
+                "exit_date": "", "exit_price": float("nan"),
+                "gross_return": float("nan"), "cost_bps": float("nan"),
+                "net_return": float("nan"), "notes": "",
+            }
+        ]
+    )
+    out = compute_today_actions(rows, today=t60)
+    assert len(out["close"]) == 1
+    assert out["close"][0]["ticker"] == "VRT"
+    assert out["close"][0]["entry_price"] == 100.0
+    assert out["open"] == []
+
+
+def test_today_actions_no_actions_on_other_days() -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "trade_id": 1, "ticker": "VRT", "event_date": "2024-01-15",
+                "sue": 2.0, "sue_sign": 1, "status": "approved",
+                "entry_date": "", "entry_price": float("nan"),
+                "exit_date": "", "exit_price": float("nan"),
+                "gross_return": float("nan"), "cost_bps": float("nan"),
+                "net_return": float("nan"), "notes": "",
+            }
+        ]
+    )
+    # Day far from T+1
+    out = compute_today_actions(rows, today=pd.Timestamp("2024-06-15"))
+    assert out["open"] == []
+    assert out["close"] == []
+
+
 def test_paper_tick_cumulative_pnl_aggregates(tmp_path: Path) -> None:
     sector = make_mini_sector(["VRT"])
     csv = tmp_path / "paper.csv"

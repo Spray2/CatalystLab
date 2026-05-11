@@ -1,4 +1,13 @@
-# Paper trading — W5 operational shakedown (L2 semi-auto)
+# Paper trading — W5 operational shakedown (L2 semi-auto + UX pack)
+
+## Comandi disponibili
+
+| Comando | Quando | Cosa fa |
+|---|---|---|
+| `catalystlab paper-tick --sector ai_infra` | Una volta al giorno | Detect nuovi earnings con \|SUE\|>1.0, transition state, rigenera `data/processed/dashboard_<sector>.html` |
+| `catalystlab today --sector ai_infra` | Quando vuoi sapere "che faccio oggi?" | Stampa azioni del giorno (OPEN/CLOSE), cap usato, slot, drawdown, posizioni aperte, prossime earnings |
+| Aprire `data/processed/dashboard_<sector>.html` in browser | Sempre disponibile | Vista visuale completa: KPI, banner drawdown, today actions, posizioni aperte/chiuse, alerts, earnings upcoming |
+
 
 Per ADR 0003 / prereg §8.1, il verdict POSITIVE su cat A T+60 triggera 1 mese
 di paper trading PRIMA del live trading. Per ADR 0004 ogni candidate trade
