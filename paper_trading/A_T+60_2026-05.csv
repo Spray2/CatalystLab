@@ -1,1 +1,2 @@
 trade_id,ticker,event_date,sue,sue_sign,status,entry_date,entry_price,exit_date,exit_price,gross_return,cost_bps,net_return,notes
+1,VST,2026-05-08,1.27696411314265,1,in_flight,2026-05-11,152.0500030517578,,,,,,IR verified via 10-Q SEC 2026-05-08: diluted EPS $2.87 matches yfinance; sign positive vs Q1 2025 $-0.93 loss
