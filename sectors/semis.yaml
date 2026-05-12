@@ -1,0 +1,119 @@
+# Sector config — Semiconductors US (Track 2)
+# Authority: docs/prereg_step1_semis.docx v1.0 (lockfile pending firma).
+# Decision record: docs/decisions/0005-track-2-semis-expansion.md.
+# Any modification of values here after data collection invalidates the run
+# statistically (prereg §0). Iterations require a v2 lockfile.
+
+sector: semis
+display_name: "Semiconductors US"
+prereg_version: "1.0"
+prereg_lockfile_date: 2026-05-12
+random_seed: 42
+
+# §7 prereg — period (identical to Sector 1 for cross-sector comparability)
+period:
+  start: 2023-01-01
+  end: 2026-04-30
+
+# §2.1 prereg — universe (8 ticker, US-listed; TSM/ASML as ADR per ADR 0005)
+universe:
+  - {ticker: NVDA, name: "NVIDIA Corp",              market: NASDAQ, type: gpu_ai_accelerator}
+  - {ticker: AMD,  name: "Advanced Micro Devices",   market: NASDAQ, type: cpu_gpu_ai}
+  - {ticker: AVGO, name: "Broadcom Inc",             market: NASDAQ, type: networking_custom_silicon}
+  - {ticker: MU,   name: "Micron Technology",        market: NASDAQ, type: memory_dram_hbm}
+  - {ticker: TSM,  name: "Taiwan Semiconductor ADR", market: NYSE,   type: foundry_leading_edge}
+  - {ticker: ASML, name: "ASML Holding ADR",         market: NASDAQ, type: euv_lithography}
+  - {ticker: AMAT, name: "Applied Materials",        market: NASDAQ, type: semi_equipment}
+  - {ticker: LRCX, name: "Lam Research",             market: NASDAQ, type: semi_equipment_etch}
+
+# §2.2 prereg — benchmark + §6.1 beta estimation params
+# Primary SOXX (iShares Semiconductor ETF) is the sector-native benchmark.
+# XLK kept as secondary for cross-Sector-1 consistency (AI Infra uses XLK primary).
+benchmarks:
+  primary: SOXX   # iShares Semiconductor ETF — used for AR computation
+  secondary: XLK  # SPDR Technology Select Sector — cross-check, consistency with Sector 1
+  beta_window_days: 252            # rolling window for β(i) estimation
+  beta_exclusion_window_days: 30   # exclude 30 days immediately before event
+
+# §4 prereg — holding windows. T+0 EXPLICITLY EXCLUDED (data leakage operativo
+# per fuso orario europeo). Any code that adds T+0 violates prereg §4 and §11.
+holding_windows: [1, 5, 20, 60]
+
+# §3 prereg — event categories (5 simultaneous hypotheses, BH-corrected at
+# stats.bh_alpha). Track 2 BH correction is INDEPENDENT from Sector 1
+# (ADR 0005 isolation rule).
+categories:
+  A:
+    name: earnings
+    description: "Earnings beats/misses (PEAD)"
+    hypothesis: "drift CAR significantly different from zero in T+1..T+60 post earnings event"
+    magnitude_metric: SUE  # (actual - consensus) / std(consensus)
+    threshold:
+      type: abs_gt
+      value: 1.0  # |SUE| > 1.0 (top/bottom decile)
+    source: yfinance_earnings_dates_plus_manual_qc
+
+  B:
+    name: hyperscaler_design_win
+    description: "Hyperscaler design win / preferred supplier announcement (semis equivalent of AI Infra PPA)"
+    hypothesis: "abnormal return positivo in T+1..T+20"
+    magnitude_metric: binary  # optional: deal value or chip volume
+    hyperscalers: [MSFT, META, AMZN, GOOGL, ORCL]
+    source: manual_curated_press_releases
+
+  C:
+    name: capacity_order_intake
+    description: "Fab announcement / capacity expansion / large order intake / backlog update"
+    hypothesis: "abnormal return positivo in T+1..T+20"
+    magnitude_metric: deal_value_usd  # fallback to binary if not disclosed
+    threshold:
+      type: any_of
+      conditions:
+        - {field: deal_value_usd,        op: gt, value: 1000000000}   # > $1B
+        - {field: backlog_change_pct,    op: gt, value: 0.10}         # > 10%
+    source: manual_curated_8k_filings
+
+  D:
+    name: sector_shock
+    description: "Macro / policy / geopolitical event impacting whole semis sector (BIS export controls, China retaliation, geopolitical, supply chain disruption)"
+    hypothesis: "reaction + mean-reversion patterns at sector level"
+    magnitude_metric: soxx_t1_return_proxy  # sector ETF return on T+1 (analogous to xlk_t1 for Sector 1)
+    source: manual_curated_news_headlines  # Reuters, FT, BIS official
+
+  E:
+    name: analyst_rating
+    description: "Tier-1 bank rating change with target price revision"
+    hypothesis: "abnormal return in T+1..T+5"
+    magnitude_metric: target_change_pct
+    threshold:
+      type: abs_gt
+      value: 0.10  # |Δ price target| > 10%
+    tier1_banks: ["Goldman Sachs", "JP Morgan", "Morgan Stanley", "Bank of America", "Citi", "UBS"]
+    source: bloomberg_consensus_or_yahoo_recommendations
+
+# §5 prereg — cost model. Identical to Sector 1 (Fineco doesn't differentiate
+# by underlying sector). Interpretation B (round-trip totals). Verified math
+# on €1000 position: 73 bps commission + 7.5 bps spread + 15 bps fx = 95.5 bps
+# round-trip → within §5.2 range 75-100 bps.
+costs:
+  commission_per_execution_eur: 3.65    # ~$3.95 Fineco USA fixed per eseguito
+  spread_round_trip_bps: 7.5            # mid of §5.1 range 5-10 bps
+  fx_round_trip_bps: 15.0               # EUR/USD Fineco multivaluta
+  default_position_size_eur: 1000.0     # §5.1 worst-case for commission incidence
+
+# §6.3 prereg — statistical thresholds (binding, no quasi-success per §11).
+# Identical thresholds to Sector 1 — test is independent but methodology mirrored.
+stats:
+  ic_threshold: 0.05            # IC > 0.05 required (Spearman)
+  hit_rate_threshold: 0.55      # hit_rate > 55% required
+  bh_alpha: 0.05                # FDR alpha for Benjamini-Hochberg over 5 categories
+  bootstrap_n: 1000             # 1000 resamples
+  bootstrap_ci: 0.95            # 95% CI must not cross zero
+
+# §12 prereg — open questions, resolved at implementation time.
+open_questions:
+  overlapping_events_same_window: "Inherit Sector 1 policy (priority A→E, first-match wins per build_panel.py)"
+  earnings_vs_design_win_same_day: "TBD — cat A vs cat B precedence on coincidence"
+  adr_timing_handling: "TSM/ASML earnings announced before US market open; events anchored to US trading day per yfinance convention"
+  nvda_split_handling: "NVDA 10-for-1 split 2024-06-10 — yfinance adj_close handles, verify cat D no false shock signal around split date"
+  cross_listing_volume: "ADR tickers may have thinner US volume than home market; cost model assumes Fineco US execution"
