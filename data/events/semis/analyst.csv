@@ -1,1 +1,6 @@
 ticker,event_date,bank,action,old_target,new_target,target_change_pct,source_url
+AMD,2025-10-07,Morgan Stanley,target_change,168.0,246.0,0.464,https://www.investing.com/news/analyst-ratings/morgan-stanley-raises-amd-stock-price-target-to-246-on-ai-growth-93CH-4274310
+AMD,2026-05-05,Morgan Stanley,target_change,255.0,360.0,0.412,https://www.thestreet.com/investing/stocks/morgan-stanley-revisits-surging-amd-stock-price-target
+MU,2025-11-13,Morgan Stanley,target_change,220.0,325.0,0.477,https://www.cnbc.com/2025/11/13/morgan-stanley-names-micron-a-top-pick-cites-memory-shortage-leading-to-new-earnings-highs.html
+MU,2026-02-11,Morgan Stanley,target_change,350.0,450.0,0.286,https://www.investing.com/news/analyst-ratings/micron-technology-price-target-raised-to-450-from-350-at-morgan-stanley-93CH-4500070
+AVGO,2025-11-20,Goldman Sachs,target_change,380.0,435.0,0.145,"https://www.tradingview.com/news/reuters.com,2025:newsml_L6N3X212B:0-broadcom-shares-hit-record-high-after-goldman-sachs-hikes-price-target/"
