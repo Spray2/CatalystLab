@@ -35,3 +35,4 @@ data/manifests/
 # Build artifacts
 dist/
 build/
+CatalystLab.code-workspace
