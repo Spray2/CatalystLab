@@ -183,13 +183,25 @@ catalystlab/
 
 ---
 
-## Current focus — Settimana 5 (Paper trading 1 mese — operational shakedown)
+## Current focus — Settimana 5 (Paper trading 1 mese + Track 2 Semis kickoff)
 
 > Settimana 4 chiusa. Step 1 ufficiale verdetto **POSITIVE** su A T+60 (PEAD). ADR 0003 documenta il risultato binding. Riepilogo W4 in `## Settimana 4 — riepilogo (chiusa)` qui sotto.
+>
+> Track 2 (Semiconductors US) aperto in parallelo (ADR 0005, 2026-05-12). Track 1 e Track 2 sono test statistici **indipendenti** con cap binding €5k ciascuno; no statistical pooling, no decision tree condiviso.
 
-### Obiettivo W5
+### Track 1 — Obiettivo W5 (AI Infra paper trading)
 
 Per prereg §8.1 il verdetto POSITIVE attiva **paper trading 1 mese** sulla combinazione vincente A T+60, come operational shakedown PRIMA del live trading (§8.1: "il paper serve solo a verificare la pipeline operativa, NON statistical re-validation").
+
+### Track 2 — Obiettivo W5b/W6 (Semis Step 1)
+
+Track 2 (`sectors/semis.yaml`, hash `be3b7cd6...`) parte in parallelo a Track 1 W5 senza interferire. Roadmap (ADR 0005):
+- W5b (2026-05-12 → 2026-05-19): firma `docs/prereg_step1_semis.docx` v1.0, build-panel end-to-end verde, scaffold event logs
+- W6 (2026-05-19 → 2026-05-31): curation B/C/D/E (target ≥10 eventi per cat)
+- W6 (2026-05-31 → 2026-06-07): event-study + decide + ADR 0006 (verdict Semis)
+- W7+ (post-2026-06-07): se POSITIVE, paper trading Semis in parallelo (decisione owner ADR 0005 §4)
+
+Operatività doppia: `paper-tick --sector ai_infra` e `paper-tick --sector semis` quando entrambi attivi; dashboard separati (`dashboard_ai_infra.html`, `dashboard_semis.html`).
 
 ### Deliverable W5
 
@@ -437,21 +449,35 @@ Esempio già presente: `0001-hybrid-not-greenfield.md`.
 
 ## Stato del progetto
 
+### Track 1 — AI Infrastructure US (Sector 1)
+
 | Item | Status |
 |------|--------|
-| Pre-registration v1.0 | ✅ firmata, lockfile committato |
+| Pre-registration v1.0 (`prereg_step1_ai_infra.docx`) | ✅ firmata, lockfile committato |
 | Repo init | ✅ W1 T1 (`5a76da1`) |
 | Layer 1 (config) | ✅ W1 T3-T4 |
 | Layer 2 (ingestion) | ✅ W1 T5-T9 (panel parquet end-to-end) |
-| Layer 3 (event study) | ✅ W2 T2-T9 (event metrics + summary parquet end-to-end) |
-| Layer 4 (stats) | ✅ W3 T2-T5 (BH + bootstrap + temporal CV + stability) |
-| Layer 5 (reporting) | ✅ W3 T6-T7 (HTML report + decision.py + CLI decide) |
-| Step 1 run smoke | ✅ verdict POSITIVE su A T+60 (smoke data, W3) |
+| Layer 3 (event study) | ✅ W2 T2-T9 |
+| Layer 4 (stats) | ✅ W3 T2-T5 |
+| Layer 5 (reporting) | ✅ W3 T6-T7 |
 | Step 1 run ufficiale | ✅ verdict **POSITIVE** A T+60 (W4 re-curated, ADR 0003) |
-| Decision (positivo/negativo/ambiguo) | ✅ **POSITIVE** binding per prereg §8.1 |
-| Paper trading 1 mese | ⏳ W5 (in corso) |
-| Live trading €5k cap | 🔒 W6+ post-paper |
+| Paper trading 1 mese | ⏳ W5 (in corso, VST trade #1 in_flight 2026-05-11) |
+| Live trading €5k cap binding | 🔒 W6+ post-paper |
+
+### Track 2 — Semiconductors US (Sector 2, opened 2026-05-12 — ADR 0005)
+
+| Item | Status |
+|------|--------|
+| ADR 0005 (Track 2 opening + isolation rules) | ⏳ proposed (accepted on prereg signing) |
+| Pre-registration v1.0 (`prereg_step1_semis.docx`) | ⏳ markdown drafted (`docs/prereg_step1_semis.md`), .docx conversion pending firma owner |
+| `sectors/semis.yaml` (pydantic validated) | ✅ hash `be3b7cd6...` |
+| `data/events/semis/` scaffold | ✅ 5 CSV header-only + README |
+| Layer 2 build-panel end-to-end | ⏳ W5b |
+| Step 1 run ufficiale Semis | 🔒 W6 (post curation) |
+| ADR 0006 — Verdict Semis | 🔒 W6 |
+| Paper trading Semis (se POSITIVE) | 🔒 W7+ in parallelo a Track 1 paper / live (ADR 0005 §4) |
+| Live trading €5k cap binding Track 2 | 🔒 post-paper Semis |
 
 ---
 
-*Ultimo aggiornamento: 2026-05-10 — chiusura Settimana 4 (Step 1 POSITIVE)*
+*Ultimo aggiornamento: 2026-05-12 — apertura Track 2 (Semis) in parallelo a W5 Track 1*
