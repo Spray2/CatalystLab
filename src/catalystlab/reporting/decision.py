@@ -13,7 +13,7 @@ following the prereg §8 binding rules:
                   -> step 2a (paper trading 1 month) -> step 2b (live €5k cap)
 
     §8.2 NEGATIVE  : no combination passes the success rule
-                  -> closure of AI Infra; new sector pre-registration
+                  -> closure of the sector; new pre-registration required
 
     §8.3 AMBIGUOUS : at least 1 combination passes IC + hit_rate but fails
                      either BH or has bootstrap CI crossing zero
@@ -95,6 +95,7 @@ def decide(
     ic_threshold: float,
     hit_rate_threshold: float,
     bh_alpha: float,
+    sector_display_name: str | None = None,
 ) -> dict:
     """Return a decision artifact for the Step 1 sector run.
 
@@ -106,6 +107,9 @@ def decide(
         ic_threshold: prereg §6.3 base threshold (typically 0.05).
         hit_rate_threshold: prereg §6.3 hit rate floor (typically 0.55).
         bh_alpha: prereg §6.3 FDR alpha (typically 0.05).
+        sector_display_name: optional human-readable sector label used to
+            customize negative/ambiguous rationale strings. Defaults to a
+            generic "the sector" phrasing when omitted.
 
     Returns:
         Dict with keys:
@@ -160,17 +164,19 @@ def decide(
         )
     elif n_ambiguous >= 1:
         verdict = "ambiguous"
+        sector_label = sector_display_name or "the sector"
         rationale = (
             f"{n_ambiguous} combinations pass IC + hit_rate but fail BH "
             f"correction or have bootstrap CI crossing 0. Per prereg §8.3 "
-            f"ambiguous is treated as negative for action — closure of AI "
-            f"Infra, no live trading."
+            f"ambiguous is treated as negative for action — closure of "
+            f"{sector_label}, no live trading."
         )
     else:
         verdict = "negative"
+        sector_label = sector_display_name or "the sector"
         rationale = (
             "No combination passes the prereg §6.3 success rule. "
-            "Per prereg §8.2 -> closure of AI Infra; new sector "
+            f"Per prereg §8.2 -> closure of {sector_label}; new "
             "pre-registration required for further research."
         )
 

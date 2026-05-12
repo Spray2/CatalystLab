@@ -353,6 +353,7 @@ def cmd_decide(args: argparse.Namespace) -> int:
         ic_threshold=sector_cfg.stats.ic_threshold,
         hit_rate_threshold=sector_cfg.stats.hit_rate_threshold,
         bh_alpha=sector_cfg.stats.bh_alpha,
+        sector_display_name=sector_cfg.display_name,
     )
     logger.info("decision: %s (%s)", decision_obj["verdict"].upper(), decision_obj["rationale"])
 
